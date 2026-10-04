@@ -17,61 +17,46 @@ jobs:
     env:
       UA: "USB-Fixer-probe/0.1 (+https://github.com/kterfan/Usb-error-kt)"
     steps:
-      - name: Intel DSA data feed (zip)
+      - name: Intel DSA feed - chipset/USB entries
         continue-on-error: true
         run: |
           New-Item -ItemType Directory -Force probe | Out-Null
           Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://dsadata.intel.com/data/en" -OutFile probe/intel.zip
           Expand-Archive probe/intel.zip -DestinationPath probe/intel -Force
-          Get-ChildItem probe/intel -Recurse -File | Select-Object -First 40 | ForEach-Object { "{0}  {1} bytes" -f $_.FullName.Substring($_.FullName.IndexOf('intel')), $_.Length } | Tee-Object probe/intel-files.txt
-          $f = Get-ChildItem probe/intel -Recurse -File | Sort-Object Length -Descending | Select-Object -First 1
-          "--- largest file: $($f.Name)"
-          $t = Get-Content $f.FullName -Raw
-          $t.Substring(0, [Math]::Min(3500, $t.Length)) | Tee-Object probe/intel-head.txt
-          "--- lines mentioning USB/xHCI (first 8):"
-          Select-String -Path (Get-ChildItem probe/intel -Recurse -File).FullName -Pattern 'xHCI|USB 3|USB3' | Select-Object -First 8 | ForEach-Object { $l = $_.Line.Trim(); $l.Substring(0, [Math]::Min(400, $l.Length)) } | Tee-Object probe/intel-usb.txt
+          $j = Get-Content probe/intel/software-configurations.json -Raw | ConvertFrom-Json
+          "entries: $($j.Count)"
+          "properties of first entry: " + (($j[0].PSObject.Properties.Name) -join ', ')
+          "--- entries whose Name matches Chipset|USB|xHCI (newest 15):"
+          $j | Where-Object { $_.Name -match 'Chipset|USB|xHCI' } | Sort-Object { [datetime]$_.DisplayReleaseDate } -Descending | Select-Object -First 15 | ForEach-Object { "{0} | {1} | {2} | {3}" -f $_.Id, $_.Version, ($_.DisplayReleaseDate -replace 'T.*',''), $_.Name }
+          "--- one Chipset entry, all short properties:"
+          $c = $j | Where-Object { $_.Name -match 'Chipset' } | Sort-Object { [datetime]$_.DisplayReleaseDate } -Descending | Select-Object -First 1
+          $c.PSObject.Properties | Where-Object { "$($_.Value)".Length -lt 300 } | ForEach-Object { "{0} = {1}" -f $_.Name, $_.Value }
 
-      - name: Microsoft Update Catalog search by hardware ID
+      - name: Microsoft Update Catalog - real USB hardware IDs, row markup, download dialog
         continue-on-error: true
         run: |
-          foreach ($term in @('PCI\VEN_8086&DEV_A0ED', 'VEN_8086&DEV_A0ED', 'Intel USB xHCI')) {
+          $terms = @('VEN_1B21&DEV_1142', 'VEN_1912&DEV_0014', 'VEN_8086&DEV_8C31', 'Renesas USB 3.0 eXtensible Host Controller', 'ASMedia USB 3.1 eXtensible Host Controller')
+          $firstGuid = $null
+          foreach ($term in $terms) {
             $q = [uri]::EscapeDataString($term)
             $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://www.catalog.update.microsoft.com/Search.aspx?q=$q"
             $c = $r.Content
-            "=== term '$term' status=$($r.StatusCode) length=$($c.Length)"
-            "tr tags: " + ([regex]::Matches($c, '<tr[ >]')).Count
-            "rows with _R: " + ([regex]::Matches($c, 'id="[0-9a-fA-F-]{36}_R\d+"')).Count
-            ($c | Select-String -Pattern 'updateMatches|no results|did not match|noResults' -AllMatches).Matches | Select-Object -First 3 | ForEach-Object { "match: " + $_.Value }
-            $i = $c.IndexOf('ctl00_catalogBody_updateMatches')
-            if ($i -ge 0) { $c.Substring($i, [Math]::Min(3500, $c.Length - $i)) | Out-File -Encoding utf8 ("probe/catalog-" + ($term -replace '[^A-Za-z0-9]','_') + ".txt") }
+            $n = ([regex]::Matches($c, 'id="([0-9a-fA-F-]{36})_R0"')).Count
+            "=== '$term' length=$($c.Length) rows(_R0)=$n noResults=" + ($c -match 'noResults')
+            if ($n -gt 0 -and -not $firstGuid) {
+              $m = [regex]::Match($c, 'id="([0-9a-fA-F-]{36})_R0"')
+              $firstGuid = $m.Groups[1].Value
+              "--- raw markup around first row of '$term':"
+              $c.Substring([Math]::Max(0, $m.Index - 200), [Math]::Min(2600, $c.Length - [Math]::Max(0, $m.Index - 200)))
+            }
           }
-          # one results page (generic term) in detail
-          $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://www.catalog.update.microsoft.com/Search.aspx?q=Intel%20USB%20xHCI"
-          $c = $r.Content
-          $m = [regex]::Matches($c, '<tr id="[^"]+"[\s\S]{0,1800}?</tr>') | Select-Object -First 2
-          "--- first result rows:"; $m | ForEach-Object { $_.Value }
-          "--- download/detail JS:"
-          ($c | Select-String -Pattern 'goToDetails|downloadFiles|DownloadDialog|download.aspx' -AllMatches).Matches | Select-Object -First 5 | ForEach-Object { $_.Value }
-
-      - name: Dell driver pack catalog
-        continue-on-error: true
-        run: |
-          New-Item -ItemType Directory -Force probe/dell | Out-Null
-          Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 120 "https://downloads.dell.com/catalog/DriverPackCatalog.cab" -OutFile probe/dell/DriverPackCatalog.cab
-          "cab bytes: " + (Get-Item probe/dell/DriverPackCatalog.cab).Length
-          expand.exe probe/dell/DriverPackCatalog.cab probe/dell/DriverPackCatalog.xml
-          Get-ChildItem probe/dell | ForEach-Object { "{0} {1}" -f $_.Name, $_.Length }
-          Get-Content probe/dell/DriverPackCatalog.xml -TotalCount 30
-          Remove-Item probe/dell/DriverPackCatalog.cab -ErrorAction SilentlyContinue
-
-      - name: Windows Update driver search via COM (read-only)
-        continue-on-error: true
-        run: |
-          $s = New-Object -ComObject Microsoft.Update.Session
-          $u = $s.CreateUpdateSearcher()
-          $res = $u.Search("IsInstalled=0 and Type='Driver'")
-          "found=$($res.Updates.Count) resultCode=$($res.ResultCode)" | Tee-Object probe/wu-summary.txt
-          $res.Updates | Select-Object -First 10 | ForEach-Object { "{0} | {1} | {2} | {3}" -f $_.Title, $_.DriverModel, $_.DriverVerDate, $_.DriverClass } | Tee-Object -Append probe/wu-summary.txt
+          if ($firstGuid) {
+            "--- DownloadDialog for $firstGuid (POST, read-only; URLs only)"
+            $body = @{ updateIDs = "[{`"size`":0,`"languages`":`"`",`"uidInfo`":`"$firstGuid`",`"updateID`":`"$firstGuid`"}]" }
+            $d = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 -Method Post -Uri "https://www.catalog.update.microsoft.com/DownloadDialog.aspx" -Body $body
+            "status=$($d.StatusCode) length=$($d.Content.Length)"
+            [regex]::Matches($d.Content, 'https?://[^''"\s<>]+\.(cab|exe|msu|msi)') | ForEach-Object { $_.Value } | Sort-Object -Unique | Select-Object -First 5
+          }
 
       - uses: actions/upload-artifact@v4
         if: always()
