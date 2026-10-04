@@ -28,6 +28,12 @@ class GuiTests(unittest.TestCase):
         self.assertIsNotNone(win.result, "scan did not finish")
         return win
 
+    def test_bundled_font_is_loaded(self):
+        self.assertTrue(gui.FONT_DIR.joinpath("Vazirmatn-Regular.ttf").is_file())
+        families = gui.QtGui.QFontDatabase.families()
+        self.assertIn("Vazirmatn", families)
+        self.assertEqual(self.app.font().family(), "Vazirmatn")
+
     def test_scan_fills_every_tab(self):
         win = self.make_window()
         self.assertEqual(win.tree.topLevelItemCount(), len(win.findings))

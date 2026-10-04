@@ -8,6 +8,7 @@ from __future__ import annotations
 import html
 import sys
 import threading
+from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt, Signal
@@ -20,8 +21,12 @@ UI = strings.UI
 SEV_COLOR = {"error": "#c62828", "warn": "#e65100", "info": "#1565c0"}
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 
+FONT_DIR = Path(__file__).parent / "data" / "fonts"
+FONT_FAMILY = "Vazirmatn"
+MONO = 'font-family: Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace'
+
 STYLE = """
-* { font-size: 10.5pt; }
+* { font-family: "Vazirmatn", "Segoe UI", "Tahoma"; font-size: 10.5pt; }
 QPushButton { padding: 6px 14px; border: 1px solid #b0b7c3; border-radius: 5px; background: #f6f7f9; }
 QPushButton:hover { background: #eaeef5; }
 QPushButton:disabled { color: #9aa0a6; background: #f1f1f1; }
@@ -84,7 +89,7 @@ def card_html(card) -> str:
     if inst:
         rows.append((UI["col_driver"], inst))
     table = "".join(
-        f'<tr><td style="padding:2px 0 2px 14px"><b>{esc(k)}</b></td><td dir="ltr" style="text-align:right">{esc(v)}</td></tr>'
+        f'<tr><td style="padding:2px 0 2px 14px"><b>{esc(k)}</b></td><td dir="ltr" style="text-align:right; {MONO}">{esc(v)}</td></tr>'
         for k, v in rows
     )
     return (
@@ -418,10 +423,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.log(f"{UI['report_saved']} {path}")
 
 
+def load_fonts() -> bool:
+    """Register the bundled Vazirmatn font (good Persian + Latin). Falls back to system fonts if missing."""
+    loaded = False
+    for ttf in sorted(FONT_DIR.glob("*.ttf")):
+        loaded = QtGui.QFontDatabase.addApplicationFont(str(ttf)) >= 0 or loaded
+    return loaded
+
+
 def make_app(argv=None) -> QtWidgets.QApplication:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(argv or sys.argv)
     app.setLayoutDirection(Qt.RightToLeft)
-    app.setFont(QtGui.QFont("Segoe UI", 10))
+    load_fonts()
+    app.setFont(QtGui.QFont(FONT_FAMILY, 10))
     app.setStyleSheet(STYLE)
     return app
 

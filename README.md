@@ -57,3 +57,6 @@ python -m unittest discover -s tests -t .
 
 ## English summary
 `python -m usb_fixer` opens a GUI (Persian UI). It scans USB devices, motherboard/BIOS/CPU, USB controller vendors and drivers, power settings, storage policies and recent USB event-log errors; lists problems with explanations; and applies fixes only after explicit confirmation, creating a restore point and an undo file first. Things only the BIOS can change (XHCI hand-off, PCIe gen, C-states) are shown as manual steps. Standard library only; `build.bat` makes a single `.exe` with PyInstaller.
+
+## فونت
+برنامه فونت **Vazirmatn** (مجوز SIL OFL 1.1، پروژهٔ [rastikerdar/vazirmatn](https://github.com/rastikerdar/vazirmatn)) رو داخل خودش داره تا فارسی و انگلیسی روی هر ویندوزی یکسان و خوانا نشون داده بشه. متن مجوز: `usb_fixer/data/fonts/OFL.txt`.
