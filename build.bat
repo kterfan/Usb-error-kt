@@ -5,6 +5,8 @@ python tools\version_info.py version_info.txt
 python -m PyInstaller --noconfirm --onefile --windowed --name USB-Fixer ^
   --uac-admin ^
   --version-file version_info.txt ^
+  --icon usb_fixer\data\icon.ico ^
+  --add-data "usb_fixer\data\icon.png;usb_fixer\data" ^
   --exclude-module tkinter ^
   --add-data "usb_fixer\data\knowledge.json;usb_fixer\data" ^
   --add-data "usb_fixer\data\fonts;usb_fixer\data\fonts" ^

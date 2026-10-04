@@ -61,6 +61,22 @@ class GuiTests(unittest.TestCase):
         self.assertIn("Vazirmatn", gui.QtGui.QFontDatabase.families())
         self.assertEqual(self.app.font().family(), "Vazirmatn")
 
+    def test_logo_files_and_window_icon(self):
+        import struct
+
+        self.assertTrue(gui.ICON_PNG.is_file())
+        ico = gui.ICON_PNG.with_suffix(".ico").read_bytes()
+        reserved, kind, count = struct.unpack("<HHH", ico[:6])
+        self.assertEqual((reserved, kind), (0, 1))
+        sizes = {ico[6 + 16 * i] or 256 for i in range(count)}
+        self.assertTrue({16, 32, 48, 256} <= sizes, sizes)
+        self.assertFalse(self.app.windowIcon().isNull())
+        win = self.make_window()
+        logos = [w for w in win.findChildren(QtWidgets.QLabel) if w.objectName() == "logo"]
+        self.assertTrue(logos and not logos[0].pixmap().isNull())
+        dlg = gui.AboutDialog(win)
+        self.assertTrue(any(w.objectName() == "logo" for w in dlg.findChildren(QtWidgets.QLabel)))
+
     def test_author_and_version_are_shown(self):
         win = self.make_window()
         self.assertIn(about.VERSION, win.windowTitle())

@@ -21,6 +21,7 @@ from .widgets import (
 
 UI = strings.UI
 FONT_DIR = Path(__file__).resolve().parent.parent / "data" / "fonts"
+ICON_PNG = Path(__file__).resolve().parent.parent / "data" / "icon.png"
 FONT_FAMILY = "Vazirmatn"
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 MODES = ("auto", "light", "dark")
@@ -138,6 +139,20 @@ class ConfirmDialog(QtWidgets.QDialog):
         self.tech_btn.setText("فرمان‌های فنی ▴" if show else "فرمان‌های فنی ▾")
 
 
+def logo_label(size: int) -> QtWidgets.QLabel:
+    """The app logo, sharp on high-DPI screens."""
+    lbl = QtWidgets.QLabel()
+    lbl.setObjectName("logo")
+    ratio = QtWidgets.QApplication.instance().devicePixelRatio() if QtWidgets.QApplication.instance() else 1.0
+    pix = QtGui.QPixmap(str(ICON_PNG))
+    if not pix.isNull():
+        pix = pix.scaled(round(size * ratio), round(size * ratio), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        pix.setDevicePixelRatio(ratio)
+        lbl.setPixmap(pix)
+    lbl.setFixedSize(size, size)
+    return lbl
+
+
 class AboutDialog(QtWidgets.QDialog):
     def __init__(self, parent):
         super().__init__(parent)
@@ -146,8 +161,11 @@ class AboutDialog(QtWidgets.QDialog):
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(26, 22, 26, 20)
         lay.setSpacing(8)
-        lay.addWidget(label(f"{about.APP_NAME_FA} ({about.APP_NAME})", "headline"))
-        lay.addWidget(label(f"نسخهٔ {about.VERSION_LABEL}", "sub"))
+        lay.addWidget(logo_label(112), 0, Qt.AlignHCenter)
+        for text, name in ((about.APP_NAME_FA, "headline"), (about.APP_NAME, "appname"), (f"نسخهٔ {about.VERSION_LABEL}", "sub")):
+            lbl = label(text, name)
+            lbl.setAlignment(Qt.AlignHCenter)
+            lay.addWidget(lbl)
         lay.addSpacing(6)
         lay.addWidget(label(about.credit_line_fa(), "cardTitle"))
         row = QtWidgets.QHBoxLayout()
@@ -265,6 +283,7 @@ class MainWindow(QtWidgets.QMainWindow):
             v.addWidget(banner)
 
         top = QtWidgets.QHBoxLayout()
+        top.addWidget(logo_label(30))
         top.addWidget(label(about.APP_NAME, "appname", wrap=False))
         top.addWidget(chip(f"نسخهٔ {about.VERSION_LABEL}"))
         top.addStretch(1)
@@ -904,6 +923,8 @@ def make_app(argv=None) -> QtWidgets.QApplication:
     app.setApplicationVersion(about.VERSION)
     load_fonts()
     app.setFont(QtGui.QFont(FONT_FAMILY, 10))
+    if ICON_PNG.is_file():
+        app.setWindowIcon(QtGui.QIcon(str(ICON_PNG)))  # title bar, taskbar, dialogs
     return app
 
 

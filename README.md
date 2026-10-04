@@ -55,6 +55,9 @@ python -m usb_fixer --demo                # ماشین ساختگی؛ روی ه�
 python -m usb_fixer --version             # نسخه و سازنده
 ```
 
+## لوگو
+لوگو با `tools/make_icon.py` ساخته می‌شه (`usb_fixer/data/icon.png` و `icon.ico`).
+
 ## ساخت
 `build.bat` ← `dist\USB-Fixer.exe` (با اطلاعات نسخه و سازنده در Properties › Details) و اگه Inno Setup 6 نصب باشه، `dist\USB-Fixer-Setup-<نسخه>.exe`.
 

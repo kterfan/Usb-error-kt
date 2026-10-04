@@ -5,5 +5,5 @@ from PySide6.QtCore import Qt  # noqa: F401
 
 from .strings import UI  # noqa: F401
 from .ui.window import (  # noqa: F401
-    FONT_DIR, FONT_FAMILY, PAGES, AboutDialog, ConfirmDialog, MainWindow, make_app, run_gui,
+    FONT_DIR, FONT_FAMILY, ICON_PNG, PAGES, AboutDialog, ConfirmDialog, MainWindow, make_app, run_gui,
 )

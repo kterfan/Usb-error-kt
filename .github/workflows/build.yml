@@ -49,7 +49,7 @@ jobs:
         shell: pwsh
         run: |
           python tools/version_info.py version_info.txt
-          python -m PyInstaller --noconfirm --onefile --windowed --name USB-Fixer --uac-admin --version-file version_info.txt --exclude-module tkinter --add-data "usb_fixer\data\knowledge.json;usb_fixer\data" --add-data "usb_fixer\data\fonts;usb_fixer\data\fonts" run_usb_fixer.py
+          python -m PyInstaller --noconfirm --onefile --windowed --name USB-Fixer --uac-admin --version-file version_info.txt --icon usb_fixer\data\icon.ico --exclude-module tkinter --add-data "usb_fixer\data\icon.png;usb_fixer\data" --add-data "usb_fixer\data\knowledge.json;usb_fixer\data" --add-data "usb_fixer\data\fonts;usb_fixer\data\fonts" run_usb_fixer.py
 
       - name: Check the built exe
         shell: pwsh
@@ -58,6 +58,8 @@ jobs:
           $info | Format-List CompanyName, ProductName, FileVersion, ProductVersion, LegalCopyright
           $version = python -c "import usb_fixer; print(usb_fixer.__version__)"
           if ($info.CompanyName -ne "Erfan Esmailzadeh" -or $info.ProductVersion -ne $version) { throw "version info missing" }
+          Add-Type -AssemblyName System.Drawing
+          [System.Drawing.Icon]::ExtractAssociatedIcon("$PWD\dist\USB-Fixer.exe").ToBitmap().Save("$PWD\exe-icon.png")
           Start-Process dist\USB-Fixer.exe -ArgumentList "--scan", "--offline", "--report", "$PWD\exe-scan.txt" -Wait
           Get-Content exe-scan.txt -TotalCount 15
           if (-not (Select-String -Path exe-scan.txt -Pattern "Erfan Esmailzadeh" -Quiet)) { throw "exe scan did not run" }
@@ -102,4 +104,5 @@ jobs:
             real-test-log.txt
             scan-report.txt
             exe-scan.txt
+            exe-icon.png
             screenshots/*.png

@@ -23,13 +23,14 @@ DefaultDirName={autopf}\USB Fixer
 DefaultGroupName=USB Fixer
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
-ArchitecturesAllowed=x64
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist
 OutputBaseFilename=USB-Fixer-Setup-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\usb_fixer\data\icon.ico
 UninstallDisplayIcon={app}\USB-Fixer.exe
 UninstallDisplayName=USB Fixer {#AppVersion} (Erfan Esmailzadeh)
 
