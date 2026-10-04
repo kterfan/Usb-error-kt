@@ -17,48 +17,52 @@ jobs:
     env:
       UA: "USB-Fixer-probe/0.1 (+https://github.com/kterfan/Usb-error-kt)"
     steps:
-      - name: Intel DSA data feed
+      - name: Intel DSA data feed (zip)
         continue-on-error: true
         run: |
           New-Item -ItemType Directory -Force probe | Out-Null
-          $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://dsadata.intel.com/data/en"
-          "status=$($r.StatusCode) type=$($r.Headers['Content-Type']) length=$($r.RawContentLength)" | Tee-Object probe/intel-summary.txt
-          $r.Content.Substring(0, [Math]::Min(6000, $r.Content.Length)) | Out-File -Encoding utf8 probe/intel-head.txt
-          Get-Content probe/intel-head.txt -TotalCount 40
+          Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://dsadata.intel.com/data/en" -OutFile probe/intel.zip
+          Expand-Archive probe/intel.zip -DestinationPath probe/intel -Force
+          Get-ChildItem probe/intel -Recurse -File | Select-Object -First 40 | ForEach-Object { "{0}  {1} bytes" -f $_.FullName.Substring($_.FullName.IndexOf('intel')), $_.Length } | Tee-Object probe/intel-files.txt
+          $f = Get-ChildItem probe/intel -Recurse -File | Sort-Object Length -Descending | Select-Object -First 1
+          "--- largest file: $($f.Name)"
+          $t = Get-Content $f.FullName -Raw
+          $t.Substring(0, [Math]::Min(3500, $t.Length)) | Tee-Object probe/intel-head.txt
+          "--- lines mentioning USB/xHCI (first 8):"
+          Select-String -Path (Get-ChildItem probe/intel -Recurse -File).FullName -Pattern 'xHCI|USB 3|USB3' | Select-Object -First 8 | ForEach-Object { $l = $_.Line.Trim(); $l.Substring(0, [Math]::Min(400, $l.Length)) } | Tee-Object probe/intel-usb.txt
 
       - name: Microsoft Update Catalog search by hardware ID
         continue-on-error: true
         run: |
-          $q = [uri]::EscapeDataString('PCI\VEN_8086&DEV_A0ED')
-          $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://www.catalog.update.microsoft.com/Search.aspx?q=$q"
+          foreach ($term in @('PCI\VEN_8086&DEV_A0ED', 'VEN_8086&DEV_A0ED', 'Intel USB xHCI')) {
+            $q = [uri]::EscapeDataString($term)
+            $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://www.catalog.update.microsoft.com/Search.aspx?q=$q"
+            $c = $r.Content
+            "=== term '$term' status=$($r.StatusCode) length=$($c.Length)"
+            "tr tags: " + ([regex]::Matches($c, '<tr[ >]')).Count
+            "rows with _R: " + ([regex]::Matches($c, 'id="[0-9a-fA-F-]{36}_R\d+"')).Count
+            ($c | Select-String -Pattern 'updateMatches|no results|did not match|noResults' -AllMatches).Matches | Select-Object -First 3 | ForEach-Object { "match: " + $_.Value }
+            $i = $c.IndexOf('ctl00_catalogBody_updateMatches')
+            if ($i -ge 0) { $c.Substring($i, [Math]::Min(3500, $c.Length - $i)) | Out-File -Encoding utf8 ("probe/catalog-" + ($term -replace '[^A-Za-z0-9]','_') + ".txt") }
+          }
+          # one results page (generic term) in detail
+          $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://www.catalog.update.microsoft.com/Search.aspx?q=Intel%20USB%20xHCI"
           $c = $r.Content
-          "status=$($r.StatusCode) length=$($c.Length)" | Tee-Object probe/catalog-summary.txt
-          "rows: " + ([regex]::Matches($c, '<tr id="[0-9a-fA-F-]+_R\d+"')).Count | Tee-Object -Append probe/catalog-summary.txt
-          "viewstate present: " + ($c -match '__VIEWSTATE') | Tee-Object -Append probe/catalog-summary.txt
-          $i = $c.IndexOf('<table')
-          if ($i -ge 0) { $c.Substring($i, [Math]::Min(7000, $c.Length - $i)) | Out-File -Encoding utf8 probe/catalog-results.txt }
-          $c | Select-String -Pattern 'goToDetails|downloadFiles|DownloadDialog' -AllMatches | Select-Object -First 8 | ForEach-Object { $_.Line.Trim().Substring(0, [Math]::Min(300, $_.Line.Trim().Length)) } | Out-File -Encoding utf8 probe/catalog-js.txt
-          Get-Content probe/catalog-summary.txt
-          Get-Content probe/catalog-js.txt
-
-      - name: AMD chipset driver page
-        continue-on-error: true
-        run: |
-          $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://www.amd.com/en/support/downloads/drivers.html/chipsets/am5/x670.html"
-          $c = $r.Content
-          "status=$($r.StatusCode) length=$($c.Length)" | Tee-Object probe/amd-summary.txt
-          [regex]::Matches($c, 'https://drivers\.amd\.com[^"''\s<>\\]+') | ForEach-Object { $_.Value } | Sort-Object -Unique | Select-Object -First 20 | Tee-Object -Append probe/amd-links.txt
-          [regex]::Matches($c, '\b\d{1,2}\.\d{2}\.\d{2}\.\d{3}\b') | ForEach-Object { $_.Value } | Sort-Object -Unique | Select-Object -First 20 | Tee-Object -Append probe/amd-versions.txt
+          $m = [regex]::Matches($c, '<tr id="[^"]+"[\s\S]{0,1800}?</tr>') | Select-Object -First 2
+          "--- first result rows:"; $m | ForEach-Object { $_.Value }
+          "--- download/detail JS:"
+          ($c | Select-String -Pattern 'goToDetails|downloadFiles|DownloadDialog|download.aspx' -AllMatches).Matches | Select-Object -First 5 | ForEach-Object { $_.Value }
 
       - name: Dell driver pack catalog
         continue-on-error: true
         run: |
-          Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 120 "https://downloads.dell.com/catalog/DriverPackCatalog.cab" -OutFile probe/DriverPackCatalog.cab
-          (Get-Item probe/DriverPackCatalog.cab).Length | Tee-Object probe/dell-summary.txt
-          expand.exe probe/DriverPackCatalog.cab -F:* probe | Out-Null
-          Get-ChildItem probe -Filter *.xml | ForEach-Object { "$($_.Name) $($_.Length)" } | Tee-Object -Append probe/dell-summary.txt
-          Get-Content (Get-ChildItem probe -Filter *.xml | Select-Object -First 1).FullName -TotalCount 25
-          Remove-Item probe/DriverPackCatalog.cab
+          New-Item -ItemType Directory -Force probe/dell | Out-Null
+          Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 120 "https://downloads.dell.com/catalog/DriverPackCatalog.cab" -OutFile probe/dell/DriverPackCatalog.cab
+          "cab bytes: " + (Get-Item probe/dell/DriverPackCatalog.cab).Length
+          expand.exe probe/dell/DriverPackCatalog.cab probe/dell/DriverPackCatalog.xml
+          Get-ChildItem probe/dell | ForEach-Object { "{0} {1}" -f $_.Name, $_.Length }
+          Get-Content probe/dell/DriverPackCatalog.xml -TotalCount 30
+          Remove-Item probe/dell/DriverPackCatalog.cab -ErrorAction SilentlyContinue
 
       - name: Windows Update driver search via COM (read-only)
         continue-on-error: true
