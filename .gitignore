@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+.venv/
+version_info.txt
+screenshots/
+*.txt.bak

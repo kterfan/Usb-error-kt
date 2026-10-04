@@ -1,0 +1,46 @@
+name: Probe driver sources (read-only)
+
+# Only GET requests, nothing is installed. Used to learn the real structure of the
+# official driver sources before writing the code that parses them.
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/zen-ramanujan-9u94tw]
+    paths: ['.github/workflows/probe-sources.yml']
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      UA: "USB-Fixer-probe/0.1 (+https://github.com/kterfan/Usb-error-kt)"
+    steps:
+      - name: Board vendor BIOS lists (ASUS / MSI / Gigabyte / ASRock) - GET only
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force probe | Out-Null
+          $urls = @(
+            'https://www.asus.com/support/api/product.asmx/GetPDBIOS?website=global&model=ProArt%20B550-CREATOR&pdid=&cpu=',
+            'https://www.asus.com/support/api/product.asmx/GetPDBIOS?website=global&model=ProArt-B550-CREATOR',
+            'https://www.asus.com/support/api/product.asmx/GetPDBIOS?website=global&model=ROG%20STRIX%20B450-F%20GAMING',
+            'https://www.msi.com/api/v1/product/support/panel?product=MAG-B550-TOMAHAWK&type=bios',
+            'https://www.gigabyte.com/Ajax/SupportFunction/GetBiosList?model=B550-AORUS-ELITE',
+            'https://www.asrock.com/mb/AMD/B550%20Steel%20Legend/index.asp#BIOS'
+          )
+          foreach ($u in $urls) {
+            "=== $u"
+            try {
+              $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 40 $u
+              $c = "$($r.Content)"
+              "status=$($r.StatusCode) type=$($r.Headers['Content-Type']) length=$($c.Length)"
+              $c.Substring(0, [Math]::Min(1500, $c.Length))
+            } catch { "ERROR: $($_.Exception.Message)" }
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-output
+          path: probe/

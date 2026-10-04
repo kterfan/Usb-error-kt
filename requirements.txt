@@ -1,0 +1,2 @@
+# Runtime dependency (the window). Everything else uses the Python standard library.
+PySide6-Essentials>=6.6

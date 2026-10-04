@@ -1,0 +1,137 @@
+name: Build Windows exe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/zen-ramanujan-9u94tw, main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write  # to publish the GitHub Release from main
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install requirements
+        shell: pwsh
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Unit tests (logic + the Qt window, offscreen)
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m unittest discover -s tests -t . -v 2>&1 | Tee-Object -FilePath test-log.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Real Windows tests (fix -> revert -> guard -> undo on this runner, scheduled task, live-test scripts, ASUS API)
+        shell: pwsh
+        env:
+          USB_FIXER_REAL_TESTS: "1"
+        run: |
+          python -m unittest discover -s tests_windows -t . -v 2>&1 | Tee-Object -FilePath real-test-log.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Screenshots of the window on Windows (demo data)
+        shell: pwsh
+        continue-on-error: true
+        run: python tools/screenshot.py screenshots
+
+      - name: Real scan on the Windows runner (console report)
+        shell: pwsh
+        run: |
+          python -m usb_fixer --scan 2>&1 | Tee-Object -FilePath scan-report.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build exe (with version and author in its Details tab)
+        shell: pwsh
+        run: |
+          python tools/version_info.py version_info.txt
+          python -m PyInstaller --noconfirm --onefile --windowed --name USB-Fixer --uac-admin --version-file version_info.txt --icon usb_fixer\data\icon.ico --exclude-module tkinter --add-data "usb_fixer\data\icon.png;usb_fixer\data" --add-data "usb_fixer\data\knowledge.json;usb_fixer\data" --add-data "usb_fixer\data\fonts;usb_fixer\data\fonts" run_usb_fixer.py
+
+      - name: Check the built exe
+        shell: pwsh
+        run: |
+          $info = (Get-Item dist\USB-Fixer.exe).VersionInfo
+          $info | Format-List CompanyName, ProductName, FileVersion, ProductVersion, LegalCopyright
+          $version = python -c "import usb_fixer; print(usb_fixer.__version__)"
+          if ($info.CompanyName -ne "Erfan Esmailzadeh" -or $info.ProductVersion -ne $version) { throw "version info missing" }
+          Add-Type -AssemblyName System.Drawing
+          [System.Drawing.Icon]::ExtractAssociatedIcon("$PWD\dist\USB-Fixer.exe").ToBitmap().Save("$PWD\exe-icon.png")
+          Start-Process dist\USB-Fixer.exe -ArgumentList "--scan", "--offline", "--report", "$PWD\exe-scan.txt" -Wait
+          Get-Content exe-scan.txt -TotalCount 15
+          if (-not (Select-String -Path exe-scan.txt -Pattern "Erfan Esmailzadeh" -Quiet)) { throw "exe scan did not run" }
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          $version = python -c "import usb_fixer; print(usb_fixer.__version__)"
+          & $iscc "/DAppVersion=$version" installer\usb_fixer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist
+
+      - name: Test the installer (silent install, then uninstall)
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\USB-Fixer-Setup-*.exe | Select-Object -First 1
+          $dir = "$env:RUNNER_TEMP\USB Fixer test"
+          Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$dir`"" -Wait
+          if (-not (Test-Path "$dir\USB-Fixer.exe")) { throw "not installed" }
+          $key = Get-ChildItem HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall, HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall | Get-ItemProperty | Where-Object { $_.DisplayName -like "USB Fixer*" }
+          $key | Format-List DisplayName, DisplayVersion, Publisher, URLInfoAbout
+          if ($key.Publisher -ne "Erfan Esmailzadeh") { throw "publisher missing" }
+          schtasks /Create /TN "USB Fixer Guard" /TR "`"$dir\USB-Fixer.exe`" --guard" /SC ONLOGON /RL HIGHEST /F | Out-Null
+          Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          Start-Sleep -Seconds 3
+          if (Test-Path "$dir\USB-Fixer.exe") { throw "not uninstalled" }
+          schtasks /Query /TN "USB Fixer Guard" 2>$null
+          if ($LASTEXITCODE -eq 0) { throw "guard task was left behind" }
+          Write-Output "installer OK"
+          exit 0
+
+      - name: Publish GitHub Release (public download, main branch only)
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = python -c "import usb_fixer; print(usb_fixer.__version__)"
+          $tag = "v$version"
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item "dist\USB-Fixer-Setup-$version.exe" "release\USB-Fixer-Setup-$version.exe"
+          Copy-Item "dist\USB-Fixer-Setup-$version.exe" "release\USB-Fixer-Setup.exe"   # stable name for the README link
+          Copy-Item "dist\USB-Fixer.exe" "release\USB-Fixer.exe"
+          Push-Location release
+          Get-ChildItem *.exe | ForEach-Object { "$((Get-FileHash $_.Name -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Out-File -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+          Pop-Location
+          $files = Get-ChildItem release | ForEach-Object { $_.FullName }
+          gh release view $tag 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @files --clobber
+            gh release edit $tag --notes-file .github/release-notes.md --latest
+          } else {
+            gh release create $tag @files --title "USB Fixer $version" --notes-file .github/release-notes.md --target $env:GITHUB_SHA --latest
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release view $tag
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: USB-Fixer-windows
+          path: |
+            dist/USB-Fixer.exe
+            dist/USB-Fixer-Setup-*.exe
+            test-log.txt
+            real-test-log.txt
+            scan-report.txt
+            exe-scan.txt
+            exe-icon.png
+            screenshots/*.png
