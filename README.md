@@ -30,7 +30,7 @@ A Windows tool that finds USB problems, identifies your motherboard/chipset, and
 - برای رفع مشکلات باید برنامه با دسترسی ادمین اجرا بشه.
 
 ## اجرا
-نیاز: ویندوز ۱۰/۱۱ و پایتون ۳٫۹ به بالا (با tkinter). هیچ پکیج اضافه‌ای لازم نیست.
+نیاز: ویندوز ۱۰/۱۱ و پایتون ۳٫۹ به بالا. یک پکیج لازمه (رابط Qt): `pip install -r requirements.txt`.
 
 ```
 python -m usb_fixer            # رابط گرافیکی
