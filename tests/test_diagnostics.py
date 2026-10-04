@@ -124,6 +124,15 @@ class AnalyzeTests(unittest.TestCase):
         findings = scan(demo.DemoRunner(inv), TODAY).findings
         self.assertIn("no_controller", keys(findings))
 
+    def test_virtual_machine_is_not_an_error(self):
+        inv = copy.deepcopy(demo.DEMO_INVENTORY)
+        inv["controllers"] = []
+        inv["system_model"] = "Virtual Machine"
+        inv["board_product"] = "Virtual Machine"
+        findings = scan(demo.DemoRunner(inv), TODAY).findings
+        self.assertIn("virtual_machine", keys(findings))
+        self.assertNotIn("no_controller", keys(findings))
+
     def test_usbstor_disabled_and_offline_disk(self):
         state = copy.deepcopy(demo.DEMO_STATE)
         state["usbstor_start"] = 4

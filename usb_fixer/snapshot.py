@@ -153,6 +153,11 @@ class SystemInfo:
     os_build: str = ""
     controllers: list = field(default_factory=list)
 
+    @property
+    def is_virtual(self) -> bool:
+        text = f"{self.system_manufacturer} {self.system_model} {self.board_manufacturer} {self.board_product}"
+        return bool(re.search(r"virtual machine|vmware|virtualbox|\bkvm\b|qemu|hyper-v|xen|parallels", text, re.IGNORECASE))
+
 
 @dataclass
 class DiskPartition:

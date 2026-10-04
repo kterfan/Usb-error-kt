@@ -65,6 +65,8 @@ def _plain_lines(items) -> str:
 def check_controllers(snap: Snapshot) -> list:
     if snap.system.controllers:
         return []
+    if snap.system.is_virtual:
+        return [Finding("virtual_machine", "info")]
     # A machine with no USB devices at all and no controller is the suspicious case.
     return [
         Finding(
