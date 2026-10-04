@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write  # to publish the GitHub Release from main
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -92,6 +94,33 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw "guard task was left behind" }
           Write-Output "installer OK"
           exit 0
+
+      - name: Publish GitHub Release (public download, main branch only)
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = python -c "import usb_fixer; print(usb_fixer.__version__)"
+          $tag = "v$version"
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item "dist\USB-Fixer-Setup-$version.exe" "release\USB-Fixer-Setup-$version.exe"
+          Copy-Item "dist\USB-Fixer-Setup-$version.exe" "release\USB-Fixer-Setup.exe"   # stable name for the README link
+          Copy-Item "dist\USB-Fixer.exe" "release\USB-Fixer.exe"
+          Push-Location release
+          Get-ChildItem *.exe | ForEach-Object { "$((Get-FileHash $_.Name -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Out-File -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+          Pop-Location
+          $files = Get-ChildItem release | ForEach-Object { $_.FullName }
+          gh release view $tag 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @files --clobber
+            gh release edit $tag --notes-file .github/release-notes.md --latest
+          } else {
+            gh release create $tag @files --title "USB Fixer $version" --notes-file .github/release-notes.md --target $env:GITHUB_SHA --latest
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release view $tag
 
       - uses: actions/upload-artifact@v4
         if: always()
