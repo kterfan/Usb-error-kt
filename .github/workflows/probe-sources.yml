@@ -17,45 +17,26 @@ jobs:
     env:
       UA: "USB-Fixer-probe/0.1 (+https://github.com/kterfan/Usb-error-kt)"
     steps:
-      - name: Intel DSA feed - chipset/USB entries
+      - name: Board vendor BIOS lists (ASUS / MSI / Gigabyte / ASRock) - GET only
         continue-on-error: true
         run: |
           New-Item -ItemType Directory -Force probe | Out-Null
-          Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://dsadata.intel.com/data/en" -OutFile probe/intel.zip
-          Expand-Archive probe/intel.zip -DestinationPath probe/intel -Force
-          $j = Get-Content probe/intel/software-configurations.json -Raw | ConvertFrom-Json
-          "entries: $($j.Count)"
-          "properties of first entry: " + (($j[0].PSObject.Properties.Name) -join ', ')
-          "--- entries whose Name matches Chipset|USB|xHCI (newest 15):"
-          $j | Where-Object { $_.Name -match 'Chipset|USB|xHCI' } | Sort-Object { [datetime]$_.DisplayReleaseDate } -Descending | Select-Object -First 15 | ForEach-Object { "{0} | {1} | {2} | {3}" -f $_.Id, $_.Version, ($_.DisplayReleaseDate -replace 'T.*',''), $_.Name }
-          "--- one Chipset entry, all short properties:"
-          $c = $j | Where-Object { $_.Name -match 'Chipset' } | Sort-Object { [datetime]$_.DisplayReleaseDate } -Descending | Select-Object -First 1
-          $c.PSObject.Properties | Where-Object { "$($_.Value)".Length -lt 300 } | ForEach-Object { "{0} = {1}" -f $_.Name, $_.Value }
-
-      - name: Microsoft Update Catalog - real USB hardware IDs, row markup, download dialog
-        continue-on-error: true
-        run: |
-          $terms = @('VEN_1B21&DEV_1142', 'VEN_1912&DEV_0014', 'VEN_8086&DEV_8C31', 'Renesas USB 3.0 eXtensible Host Controller', 'ASMedia USB 3.1 eXtensible Host Controller')
-          $firstGuid = $null
-          foreach ($term in $terms) {
-            $q = [uri]::EscapeDataString($term)
-            $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://www.catalog.update.microsoft.com/Search.aspx?q=$q"
-            $c = $r.Content
-            $n = ([regex]::Matches($c, 'id="([0-9a-fA-F-]{36})_R0"')).Count
-            "=== '$term' length=$($c.Length) rows(_R0)=$n noResults=" + ($c -match 'noResults')
-            if ($n -gt 0 -and -not $firstGuid) {
-              $m = [regex]::Match($c, 'id="([0-9a-fA-F-]{36})_R0"')
-              $firstGuid = $m.Groups[1].Value
-              "--- raw markup around first row of '$term':"
-              $c.Substring([Math]::Max(0, $m.Index - 200), [Math]::Min(2600, $c.Length - [Math]::Max(0, $m.Index - 200)))
-            }
-          }
-          if ($firstGuid) {
-            "--- DownloadDialog for $firstGuid (POST, read-only; URLs only)"
-            $body = @{ updateIDs = "[{`"size`":0,`"languages`":`"`",`"uidInfo`":`"$firstGuid`",`"updateID`":`"$firstGuid`"}]" }
-            $d = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 -Method Post -Uri "https://www.catalog.update.microsoft.com/DownloadDialog.aspx" -Body $body
-            "status=$($d.StatusCode) length=$($d.Content.Length)"
-            [regex]::Matches($d.Content, 'https?://[^''"\s<>]+\.(cab|exe|msu|msi)') | ForEach-Object { $_.Value } | Sort-Object -Unique | Select-Object -First 5
+          $urls = @(
+            'https://www.asus.com/support/api/product.asmx/GetPDBIOS?website=global&model=ProArt%20B550-CREATOR&pdid=&cpu=',
+            'https://www.asus.com/support/api/product.asmx/GetPDBIOS?website=global&model=ProArt-B550-CREATOR',
+            'https://www.asus.com/support/api/product.asmx/GetPDBIOS?website=global&model=ROG%20STRIX%20B450-F%20GAMING',
+            'https://www.msi.com/api/v1/product/support/panel?product=MAG-B550-TOMAHAWK&type=bios',
+            'https://www.gigabyte.com/Ajax/SupportFunction/GetBiosList?model=B550-AORUS-ELITE',
+            'https://www.asrock.com/mb/AMD/B550%20Steel%20Legend/index.asp#BIOS'
+          )
+          foreach ($u in $urls) {
+            "=== $u"
+            try {
+              $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 40 $u
+              $c = "$($r.Content)"
+              "status=$($r.StatusCode) type=$($r.Headers['Content-Type']) length=$($c.Length)"
+              $c.Substring(0, [Math]::Min(1500, $c.Length))
+            } catch { "ERROR: $($_.Exception.Message)" }
           }
 
       - uses: actions/upload-artifact@v4
