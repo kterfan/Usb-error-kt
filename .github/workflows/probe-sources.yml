@@ -4,6 +4,9 @@ name: Probe driver sources (read-only)
 # official driver sources before writing the code that parses them.
 on:
   workflow_dispatch:
+  push:
+    branches: [claude/zen-ramanujan-9u94tw]
+    paths: ['.github/workflows/probe-sources.yml']
 
 jobs:
   probe:
