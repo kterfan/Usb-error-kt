@@ -7,7 +7,7 @@ import html
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
-from .. import report, strings
+from .. import strings
 from . import theme
 
 UI = strings.UI
@@ -132,7 +132,8 @@ RLM = "\u200f"  # right-to-left mark: makes a line that starts with Latin text s
 
 
 def label(text: str, name: str = "", wrap: bool = True, rich: bool = False) -> QtWidgets.QLabel:
-    lbl = QtWidgets.QLabel(text if (rich or name == "mono") else RLM + text)
+    # every line gets its own RLM, so a line that starts with Latin text still reads right-to-left
+    lbl = QtWidgets.QLabel(text if (rich or name == "mono") else RLM + text.replace("\n", "\n" + RLM))
     if name:
         lbl.setObjectName(name)
     lbl.setWordWrap(wrap)
@@ -178,8 +179,46 @@ def card_layout(card: QtWidgets.QFrame) -> QtWidgets.QVBoxLayout:
     return lay
 
 
+class Section(QtWidgets.QWidget):
+    """Section heading with an optional subtitle, used between groups of cards."""
+
+    def __init__(self, title: str, subtitle: str = "", parent=None):
+        super().__init__(parent)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(4, 10, 4, 0)
+        lay.setSpacing(2)
+        lay.addWidget(label(title, "sectionTitle"))
+        if subtitle:
+            lay.addWidget(label(subtitle, "sub"))
+
+
+def risk_chip(risk: str) -> QtWidgets.QLabel:
+    return chip(strings.RISK_LABEL.get(risk, risk), {"safe": "fix", "low": "manual", "caution": "error"}.get(risk, ""))
+
+
+class AdviceBox(QtWidgets.QFrame):
+    """The 'what should I do' part of a card: always visible, one sentence plus link buttons."""
+
+    def __init__(self, text: str, links=(), parent=None):
+        super().__init__(parent)
+        self.setObjectName("advice")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(4)
+        self.text = label(text)
+        lay.addWidget(self.text)
+        if links:
+            row = QtWidgets.QHBoxLayout()
+            row.setSpacing(4)
+            for lbl, url in links:
+                row.addWidget(link_button(lbl, url))
+            row.addStretch(1)
+            lay.addLayout(row)
+
+
 class ProblemCard(Card):
-    """One finding: icon, title, one-line summary, chips, a 'fix' check box and expandable details."""
+    """One finding: icon, title, summary, the recommendation (always visible), fix toggle, more details."""
 
     toggled = QtCore.Signal()
 
@@ -200,9 +239,12 @@ class ProblemCard(Card):
         chips = QtWidgets.QHBoxLayout()
         chips.setSpacing(6)
         chips.addWidget(chip(strings.SEVERITY[finding.severity], "error" if finding.severity == "error" else ""))
+        if finding.reverted:
+            chips.addWidget(chip("دوباره برگشته", "error"))
         if finding.fix_id:
             chips.addWidget(chip("قابل رفع خودکار", "fix"))
-        if finding.manual:
+            chips.addWidget(risk_chip(strings.FIX_INFO[finding.fix_id]["risk"]))
+        elif finding.manual:
             chips.addWidget(chip("نیاز به اقدام دستی", "manual"))
         chips.addStretch(1)
         col.addLayout(chips)
@@ -224,6 +266,11 @@ class ProblemCard(Card):
         row.addLayout(side)
         lay.addLayout(row)
 
+        reco = finding.recommendation
+        self.advice = AdviceBox(reco, finding.links[:2]) if reco else None
+        if self.advice:
+            lay.addWidget(self.advice)
+
         self.details = label(self._details_html(), rich=True)
         lay.addWidget(self.details)
         self.details.setVisible(False)
@@ -231,19 +278,19 @@ class ProblemCard(Card):
     def _details_html(self) -> str:
         f = self.finding
         sub = theme.color("sub")
-        parts = [f'<div dir="rtl">']
+        parts = ['<div dir="rtl">']
         parts.append("".join(f'<p style="margin:3px 0">{html.escape(l)}</p>' for l in f.detail.split("\n") if l.strip()))
         if f.fix_id:
-            title, desc = strings.FIXES[f.fix_id]
-            parts.append(f'<p style="margin:10px 0 2px 0"><b>{esc(UI["fix_header"])}</b><br>{esc(title)}؛ <span style="color:{sub}">{esc(desc)}</span></p>')
-        if f.manual:
-            items = "".join(f'<li style="margin:2px 0">{esc(m)}</li>' for m in f.manual_texts)
+            info = strings.FIX_INFO[f.fix_id]
+            parts.append(f'<p style="margin:10px 0 2px 0"><b>{esc(UI["fix_header"])}</b><br>{esc(info["plain"])}<br>'
+                         f'<span style="color:{sub}">{esc(info["undo_note"])}</span></p>')
+        if f.manual and len(f.manual_texts) > (0 if f.fix_id else 1):
+            rest = f.manual_texts if f.fix_id else f.manual_texts[1:]
+            items = "".join(f'<li style="margin:2px 0">{esc(m)}</li>' for m in rest)
             parts.append(f'<p style="margin:10px 0 2px 0"><b>{esc(UI["manual_header"])}</b></p><ul style="margin-top:2px">{items}</ul>')
-        if f.links:
+        if len(f.links) > 2:
             link = theme.color("link")
-            items = "".join(
-                f'<li style="margin:2px 0"><a style="color:{link}" href="{html.escape(u)}">{esc(lbl)}</a></li>' for lbl, u in f.links
-            )
+            items = "".join(f'<li style="margin:2px 0"><a style="color:{link}" href="{html.escape(u)}">{esc(lbl)}</a></li>' for lbl, u in f.links[2:])
             parts.append(f'<p style="margin:10px 0 2px 0"><b>{esc(UI["links_header"])}</b></p><ul style="margin-top:2px">{items}</ul>')
         parts.append("</div>")
         return "".join(parts)
@@ -255,56 +302,127 @@ class ProblemCard(Card):
         self.more.setText("بستن جزئیات" if show else "جزئیات")
 
 
-class DriverCard(Card):
-    """One USB controller (or the board): exact names/IDs and links for a manual update."""
+class TechToggle(QtWidgets.QWidget):
+    """'Technical details' link that reveals label/value rows (IDs, versions) with a copy button."""
 
     copied = QtCore.Signal(str)
 
+    def __init__(self, rows: list, copy_value: str = "", parent=None):
+        super().__init__(parent)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        top = QtWidgets.QHBoxLayout()
+        self.button = QtWidgets.QPushButton("جزئیات فنی ▾")
+        self.button.setObjectName("link")
+        self.button.setCursor(Qt.PointingHandCursor)
+        self.button.clicked.connect(self.toggle)
+        top.addWidget(self.button)
+        top.addStretch(1)
+        lay.addLayout(top)
+        self.body = QtWidgets.QWidget()
+        grid = QtWidgets.QGridLayout(self.body)
+        grid.setContentsMargins(6, 0, 6, 0)
+        grid.setHorizontalSpacing(12)
+        for i, (k, v) in enumerate(rows):
+            grid.addWidget(label(k, "sub", wrap=False), i, 0)
+            val = label(v, "mono", wrap=True)
+            val.setLayoutDirection(Qt.LeftToRight)
+            grid.addWidget(val, i, 1)
+        if copy_value:
+            b = QtWidgets.QPushButton("کپی شناسه")
+            b.setObjectName("ghost")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda: self.copied.emit(copy_value))
+            grid.addWidget(b, 0, 2)
+        grid.setColumnStretch(1, 1)
+        lay.addWidget(self.body)
+        self.body.setVisible(False)
+
+    def toggle(self) -> None:
+        show = self.body.isHidden()
+        self.body.setVisible(show)
+        self.button.setText("جزئیات فنی ▴" if show else "جزئیات فنی ▾")
+
+
+class DeviceRow(Card):
+    """One physical device in plain words: type, name, maker, status; IDs hidden under technical details."""
+
+    def __init__(self, dev, parent=None):
+        sev = {"error": "error", "absent": "", "ok": ""}[dev.status]
+        super().__init__(sev, parent)
+        self.device = dev
+        lay = card_layout(self)
+        lay.setContentsMargins(16, 10, 16, 10)
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(12)
+        kind = {"error": "error", "absent": "info", "ok": "ok"}[dev.status]
+        row.addWidget(IconBadge(kind, 30), 0, Qt.AlignTop)
+        col = QtWidgets.QVBoxLayout()
+        col.setSpacing(2)
+        title = dev.name + (f"  ×{dev.count}" if dev.count > 1 else "")
+        col.addWidget(label(title, "cardTitle"))
+        meta = "، ".join(x for x in (dev.type_label, dev.vendor, dev.status_text) if x)
+        col.addWidget(label(meta, "sub"))
+        row.addLayout(col, 1)
+        lay.addLayout(row)
+        self.tech = TechToggle([("شناسه‌ها", "\n".join(dev.ids))], dev.ids[0] if dev.ids else "")
+        lay.addWidget(self.tech)
+
+
+class VerdictCard(Card):
+    """Big direct answer at the top of a page."""
+
+    def __init__(self, ok: bool, title: str, text: str, actions=(), links=(), parent=None):
+        super().__init__("ok" if ok else "warn", parent)
+        lay = card_layout(self)
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(14)
+        row.addWidget(IconBadge("ok" if ok else "warn", 44), 0, Qt.AlignTop)
+        col = QtWidgets.QVBoxLayout()
+        col.setSpacing(4)
+        col.addWidget(label(title, "cardTitle"))
+        if text:
+            col.addWidget(label(text, "sub"))
+        row.addLayout(col, 1)
+        lay.addLayout(row)
+        for item in actions:
+            lay.addWidget(AdviceBox(item[0], [item[1:]] if len(item) == 3 else []))
+        if links:
+            box = QtWidgets.QHBoxLayout()
+            for text_, url in links:
+                box.addWidget(link_button(text_, url))
+            box.addStretch(1)
+            lay.addLayout(box)
+
+
+class ControllerCardWidget(Card):
+    copied = QtCore.Signal(str)
+
     def __init__(self, card, parent=None):
-        super().__init__("ok" if not card.advice or card.is_generic else "info", parent)
+        super().__init__("ok" if card.ok else "warn", parent)
         self.card = card
         lay = card_layout(self)
-        top = QtWidgets.QHBoxLayout()
-        top.addWidget(label(card.name, "cardTitle"), 1)
-        if card.vendor:
-            top.addWidget(chip(card.vendor), 0, Qt.AlignTop)
-        if card.hardware_id:
-            top.addWidget(chip("درایور عمومی ویندوز" if card.is_generic else "درایور سازنده", "manual" if card.is_generic else "fix"), 0, Qt.AlignTop)
-        lay.addLayout(top)
-
-        grid = QtWidgets.QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(4)
-        r = 0
-        if card.hardware_id:
-            sub = f"  (SUBSYS_{card.subsystem})" if card.subsystem else ""
-            grid.addWidget(label(UI["col_hwid"], "sub", wrap=False), r, 0)
-            hw = label(card.hardware_id + sub, "mono", wrap=False)
-            hw.setLayoutDirection(Qt.LeftToRight)
-            grid.addWidget(hw, r, 1, Qt.AlignLeft)
-            copy = QtWidgets.QPushButton("کپی")
-            copy.setObjectName("ghost")
-            copy.setCursor(Qt.PointingHandCursor)
-            copy.clicked.connect(lambda: self.copied.emit(card.hardware_id))
-            grid.addWidget(copy, r, 2, Qt.AlignLeft)
-            r += 1
-        inst = " ".join(x for x in (card.provider, card.version, card.driver_date) if x)
-        if inst:
-            grid.addWidget(label(UI["col_driver"], "sub", wrap=False), r, 0)
-            val = label(inst, "mono", wrap=False)
-            val.setLayoutDirection(Qt.LeftToRight)
-            grid.addWidget(val, r, 1, Qt.AlignLeft)
-        grid.setColumnStretch(3, 1)
-        lay.addLayout(grid)
-
-        for a in card.advice[:1]:
-            lay.addWidget(label("• " + a, "sub"))
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(IconBadge("ok" if card.ok else "warn", 34), 0, Qt.AlignTop)
+        col = QtWidgets.QVBoxLayout()
+        col.setSpacing(2)
+        col.addWidget(label(card.title, "cardTitle"))
+        col.addWidget(label(f"درایور: {card.driver_text}", "sub"))
+        if card.advice:
+            col.addWidget(label(card.advice))
+        row.addLayout(col, 1)
+        lay.addLayout(row)
         if card.links:
             links = QtWidgets.QHBoxLayout()
             for text, url in card.links:
                 links.addWidget(link_button(text, url))
             links.addStretch(1)
             lay.addLayout(links)
+        self.tech = TechToggle([("نام در ویندوز", card.name)] + list(card.tech), card.hardware_id)
+        self.tech.copied.connect(self.copied.emit)
+        lay.addWidget(self.tech)
 
 
 class InfoCard(Card):
@@ -319,11 +437,6 @@ class InfoCard(Card):
         grid.setVerticalSpacing(4)
         for i, (k, v) in enumerate(rows):
             grid.addWidget(label(k, "sub", wrap=False), i, 0, Qt.AlignTop)
-            val = label(v or "—")
-            grid.addWidget(val, i, 1)
+            grid.addWidget(label(v or "—"), i, 1)
         grid.setColumnStretch(1, 1)
         lay.addLayout(grid)
-
-
-def card_text(card) -> str:
-    return "\n".join(report.card_lines(card))

@@ -12,7 +12,7 @@ from .snapshot import Snapshot, SystemInfo, take_snapshot
 from .system import Runner, run
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
-SUPPORT_LINK_MANUAL = {"update_bios", "update_chipset", "install_driver"}
+SUPPORT_LINK_MANUAL = {"update_bios", "update_chipset", "install_driver", "addon_driver_if_problem"}
 
 
 @dataclass
@@ -26,12 +26,23 @@ class Finding:
     links: list = field(default_factory=list)  # (label, url)
     title_override: Optional[str] = None
     detail_override: Optional[str] = None
+    reverted: bool = False  # a fix for this was applied earlier, but the problem came back
 
     @property
     def title(self) -> str:
-        if self.title_override:
-            return self.title_override
-        return strings.FINDINGS[self.key][0]
+        base = self.title_override or strings.FINDINGS[self.key][0]
+        return f"دوباره برگشته: {base}" if self.reverted else base
+
+    @property
+    def recommendation(self) -> str:
+        """One plain sentence telling the user what to do, shown directly on the card."""
+        if self.reverted:
+            return strings.UI["reverted_reco"]
+        if self.fix_id:
+            return strings.FIX_INFO[self.fix_id]["reco"]
+        if self.manual:
+            return self.manual_texts[0]
+        return strings.INFO_RECO.get(self.key, "")
 
     @property
     def detail(self) -> str:
@@ -48,6 +59,7 @@ class Finding:
 class ScanResult:
     snapshot: Snapshot
     findings: list
+    bios: object = None  # bios.BiosCheck when an online check was done
 
 
 def _error_lines(devices) -> str:
@@ -132,7 +144,13 @@ def check_drivers(snap: Snapshot) -> list:
     if not generic:
         return []
     lines = _plain_lines(f"{c.name} ({c.vendor}) نسخهٔ {c.driver_version or '?'}" for c in generic)
-    return [Finding("ms_default_driver", "info", params={"lines": lines}, manual=["update_chipset"])]
+    return [Finding("ms_default_driver", "info", params={"lines": lines}, manual=["addon_driver_if_problem"])]
+
+
+def _scheme_values(snap: Snapshot, name: str, current) -> dict:
+    """{scheme guid: (ac, dc)} for every power plan; just the active one if the plan list is unknown."""
+    values = {g: v[name] for g, v in (snap.power_schemes or {}).items() if v.get(name)}
+    return values or {"SCHEME_CURRENT": tuple(current)}
 
 
 def check_power(snap: Snapshot) -> list:
@@ -145,7 +163,7 @@ def check_power(snap: Snapshot) -> list:
                 "warn",
                 params={"ac": "روشن" if ss[0] == 1 else "خاموش", "dc": "روشن" if ss[1] == 1 else "خاموش"},
                 fix_id="disable_suspend",
-                targets=[ss],
+                targets=[_scheme_values(snap, "selective_suspend", ss)],
             )
         )
     if snap.state.hub_power:
@@ -168,7 +186,7 @@ def check_power(snap: Snapshot) -> list:
                 "info",
                 params={"ac": "روشن" if aspm[0] else "خاموش", "dc": "روشن" if aspm[1] else "خاموش"},
                 fix_id="disable_aspm",
-                targets=[aspm],
+                targets=[_scheme_values(snap, "pcie_aspm", aspm)],
             )
         )
     return out
@@ -208,12 +226,29 @@ def check_storage(snap: Snapshot) -> list:
                 targets=[d.number for d in readonly],
             )
         )
+    raw = []
+    for d in st.disks:
+        if d.offline:
+            continue
+        for p in d.partitions:
+            if p.size > 0 and p.type.lower() in {"basic", "ifs", ""} and p.fs.upper() in {"RAW", "UNKNOWN"}:
+                raw.append((d, p))
+    if raw:
+        out.append(
+            Finding(
+                "usb_disk_raw",
+                "error",
+                params={"lines": _plain_lines(f"دیسک {d.number} ({d.name}) پارتیشن {p.number}" + (f" ({p.letter}:)" if p.letter else "") for d, p in raw)},
+                manual=["recover_data", "format_after_recovery"],
+            )
+        )
     missing = []
     for d in st.disks:
         if d.offline:
             continue
         for p in d.partitions:
-            if not p.letter and p.size > 0 and p.type.lower() in {"basic", "ifs", ""}:
+            # a RAW partition must not get a letter: Windows would then pop up "format this disk?"
+            if not p.letter and p.size > 0 and p.type.lower() in {"basic", "ifs", ""} and (d, p) not in raw:
                 missing.append((d, p))
     if missing:
         out.append(
@@ -235,10 +270,13 @@ def check_events(snap: Snapshot) -> list:
     return [Finding("event_errors", "info", params={"lines": lines})]
 
 
-def check_knowledge(snap: Snapshot, today: date, rules: list) -> list:
+def check_knowledge(snap: Snapshot, today: date, rules: list, bios=None) -> list:
     out = []
+    current = bios is not None and bios.is_current
     for rule in rules:
         if not knowledge.matches(rule.get("when", {}), snap.system, today):
+            continue
+        if current and rule.get("skip_if_bios_current"):
             continue
         if rule.get("builtin") == "bios_old":
             age = knowledge.bios_age_days(snap.system, today) or 0
@@ -267,6 +305,21 @@ def check_knowledge(snap: Snapshot, today: date, rules: list) -> list:
     return out
 
 
+def check_bios(snap: Snapshot, bios) -> list:
+    if bios is None or bios.status != "update":
+        return []
+    when = bios.latest_date.isoformat() if bios.latest_date else "?"
+    f = Finding(
+        "bios_update",
+        "info",
+        params={"installed": bios.installed or "?", "latest": bios.latest, "date": when, "source": bios.source},
+        manual=["update_bios"],
+    )
+    if bios.download_url:
+        f.links.append((f"دانلود BIOS {bios.latest} از سایت رسمی {bios.source}", bios.download_url))
+    return [f]
+
+
 def support_url(system: SystemInfo) -> str:
     if system.is_laptop and system.system_model:
         who = f"{system.system_manufacturer} {system.system_model}"
@@ -275,7 +328,20 @@ def support_url(system: SystemInfo) -> str:
     return "https://www.google.com/search?q=" + quote_plus(f"{who} support drivers BIOS")
 
 
-def analyze(snap: Snapshot, today: Optional[date] = None, rules: Optional[list] = None) -> list:
+PERSISTENT_FIXES = {
+    "disable_suspend", "disable_aspm", "disable_hub_power", "disable_fast_startup",
+    "enable_usbstor", "enable_uasp", "remove_storage_policy", "remove_write_protect",
+}
+
+
+def analyze(
+    snap: Snapshot,
+    today: Optional[date] = None,
+    rules: Optional[list] = None,
+    bios=None,
+    applied: Optional[set] = None,
+) -> list:
+    """`bios`: result of the online BIOS check (or None). `applied`: fix ids applied in earlier runs."""
     today = today or date.today()
     if rules is None:
         rules = knowledge.load_rules()
@@ -286,8 +352,16 @@ def analyze(snap: Snapshot, today: Optional[date] = None, rules: Optional[list] 
         + check_power(snap)
         + check_storage(snap)
         + check_events(snap)
-        + check_knowledge(snap, today, rules)
+        + check_knowledge(snap, today, rules, bios)
+        + check_bios(snap, bios)
     )
+    if any(f.key == "bios_update" for f in findings):  # the online answer says more than "your BIOS is old"
+        findings = [f for f in findings if f.key != "bios_old"]
+    for f in findings:
+        if applied and f.fix_id in applied and f.fix_id in PERSISTENT_FIXES:
+            f.reverted = True
+            if SEVERITY_ORDER.get(f.severity, 9) > SEVERITY_ORDER["warn"]:
+                f.severity = "warn"
     url = support_url(snap.system)
     for f in findings:
         if SUPPORT_LINK_MANUAL & set(f.manual):
@@ -296,6 +370,12 @@ def analyze(snap: Snapshot, today: Optional[date] = None, rules: Optional[list] 
     return findings
 
 
-def scan(runner: Runner = run, today: Optional[date] = None) -> ScanResult:
+def scan(runner: Runner = run, today: Optional[date] = None, online: bool = False, fetch=None, applied=None) -> ScanResult:
+    """Local scan; with `online`, also asks the board maker whether a newer BIOS exists."""
     snap = take_snapshot(runner)
-    return ScanResult(snap, analyze(snap, today))
+    bios_result = None
+    if online:
+        from . import bios as bios_mod
+
+        bios_result = bios_mod.check_latest(snap.system, fetch)
+    return ScanResult(snap, analyze(snap, today, bios=bios_result, applied=applied), bios_result)

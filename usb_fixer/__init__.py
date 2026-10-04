@@ -1,3 +1,6 @@
-"""USB Fixer: diagnose and fix USB problems on Windows."""
+"""USB Fixer: diagnose and fix USB problems on Windows.
 
-__version__ = "0.1.0"
+Created by Erfan Esmailzadeh (عرفان اسمعیل زاده) - https://github.com/kterfan
+"""
+
+__version__ = "0.9.0"

@@ -53,13 +53,19 @@ $controllers = @($all | Where-Object { $_.Present -and $_.InstanceId -like 'PCI\
   $ds = ''; if ($dd) { $ds = $dd.ToString('yyyy-MM-dd') }
   [pscustomobject]@{ name="$($_.FriendlyName)"; instance_id=$_.InstanceId; driver_provider="$(Prop $_.InstanceId 'DEVPKEY_Device_DriverProvider')"; driver_version="$(Prop $_.InstanceId 'DEVPKEY_Device_DriverVersion')"; driver_date=$ds }
 })
+$nodes = @(Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'USB\*' -or $_.InstanceId -like 'USBSTOR\*' -or $_.InstanceId -like 'HID\*' -or $_.InstanceId -like 'SCSI\*&VEN_*' } | ForEach-Object {
+  $id = $_.InstanceId
+  $n = $_.FriendlyName; if (-not $n) { $n = $_.Name }
+  $desc = ''; if ($id -like 'USB\*') { $desc = "$(Prop $id 'DEVPKEY_Device_BusReportedDeviceDesc')" }
+  [pscustomobject]@{ id=$id; name="$n"; cls="$($_.Class)"; status="$($_.Status)"; error_code=[int]$_.ConfigManagerErrorCode; desc=$desc; parent="$(Prop $id 'DEVPKEY_Device_Parent')" }
+})
 $bd = ''; if ($bi.ReleaseDate) { $bd = $bi.ReleaseDate.ToString('yyyy-MM-dd') }
 [pscustomobject]@{
   board_manufacturer="$($b.Manufacturer)"; board_product="$($b.Product)"; board_version="$($b.Version)"
   bios_vendor="$($bi.Manufacturer)"; bios_version="$($bi.SMBIOSBIOSVersion)"; bios_date=$bd
   system_manufacturer="$($cs.Manufacturer)"; system_model="$($cs.Model)"; pc_system_type=[int]$cs.PCSystemType
   cpu="$($cpu.Name)"; os_caption="$($os.Caption)"; os_build="$($os.BuildNumber)"
-  devices=$devices; controllers=$controllers
+  devices=$devices; controllers=$controllers; nodes=$nodes
 } | ConvertTo-Json -Depth 5 -Compress
 """
 
@@ -70,7 +76,7 @@ $svc = @{}
 foreach ($n in 'PlugPlay') { $s = Get-Service -Name $n; if ($s) { $svc[$n] = [int]$s.Status } else { $svc[$n] = $null } }
 $disks = @(Get-Disk | Where-Object { $_.BusType -eq 'USB' } | ForEach-Object {
   $d = $_
-  $parts = @(Get-Partition -DiskNumber $d.Number | ForEach-Object { [pscustomobject]@{ number=[int]$_.PartitionNumber; letter="$($_.DriveLetter)".Trim(); type="$($_.Type)"; size=[int64]$_.Size } })
+  $parts = @(Get-Partition -DiskNumber $d.Number | ForEach-Object { $v = $_ | Get-Volume -ErrorAction SilentlyContinue; [pscustomobject]@{ number=[int]$_.PartitionNumber; letter="$($_.DriveLetter)".Trim(); type="$($_.Type)"; size=[int64]$_.Size; fs="$($v.FileSystemType)"; health="$($v.HealthStatus)" } })
   [pscustomobject]@{ number=[int]$d.Number; name="$($d.FriendlyName)"; offline=[bool]$d.IsOffline; readonly=[bool]$d.IsReadOnly; size=[int64]$d.Size; partitions=$parts }
 })
 $hub = @(Get-CimInstance -Namespace root/wmi -ClassName MSPower_DeviceEnable | Where-Object { $_.InstanceName -like 'USB*' -and $_.Enable } | ForEach-Object { $_.InstanceName })
@@ -138,6 +144,19 @@ class UsbDevice:
 
 
 @dataclass
+class UsbNode:
+    """Any present device node under USB (the device itself, its interfaces, HID/storage children)."""
+
+    instance_id: str
+    name: str = ""
+    cls: str = ""
+    status: str = ""
+    error_code: int = 0
+    desc: str = ""  # name the device reports about itself (BusReportedDeviceDesc)
+    parent: str = ""
+
+
+@dataclass
 class SystemInfo:
     board_manufacturer: str = ""
     board_product: str = ""
@@ -165,6 +184,8 @@ class DiskPartition:
     letter: str = ""
     type: str = ""
     size: int = 0
+    fs: str = ""
+    health: str = ""
 
 
 @dataclass
@@ -203,8 +224,11 @@ class Snapshot:
     system: SystemInfo
     devices: list
     state: State
-    power: dict  # name -> (ac, dc) or None
+    power: dict  # name -> (ac, dc) or None, for the active power plan
     warnings: list = field(default_factory=list)
+    nodes: list = field(default_factory=list)
+    power_schemes: dict = field(default_factory=dict)  # scheme guid -> {name: (ac, dc)}
+    current_scheme: str = ""
 
 
 def _as_list(value: Any) -> list:
@@ -286,6 +310,22 @@ def parse_inventory(data: dict) -> tuple[SystemInfo, list]:
     return system, devices
 
 
+def parse_nodes(data: dict) -> list:
+    return [
+        UsbNode(
+            instance_id=n.get("id", ""),
+            name=n.get("name", ""),
+            cls=n.get("cls", ""),
+            status=n.get("status", ""),
+            error_code=_int(n.get("error_code")) or 0,
+            desc=n.get("desc", ""),
+            parent=n.get("parent", ""),
+        )
+        for n in _as_list(data.get("nodes"))
+        if n.get("id")
+    ]
+
+
 def parse_state(data: dict) -> State:
     disks = []
     for d in _as_list(data.get("disks")):
@@ -295,6 +335,8 @@ def parse_state(data: dict) -> State:
                 letter=(p.get("letter") or "").strip(),
                 type=p.get("type", ""),
                 size=_int(p.get("size")) or 0,
+                fs=(p.get("fs") or "").strip(),
+                health=(p.get("health") or "").strip(),
             )
             for p in _as_list(d.get("partitions"))
         ]
@@ -334,12 +376,36 @@ def parse_powercfg(text: str) -> Optional[tuple[int, int]]:
     return int(values[-2], 16), int(values[-1], 16)
 
 
-def read_power(runner: Runner) -> dict:
+GUID_RE = re.compile(r"([0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})")
+
+
+def parse_schemes(text: str) -> tuple[list, str]:
+    """`powercfg /L` -> (all scheme GUIDs, active GUID). The active line ends with '*' in every language."""
+    schemes, active = [], ""
+    for line in text.splitlines():
+        m = GUID_RE.search(line)
+        if not m:
+            continue
+        guid = m.group(1).lower()
+        schemes.append(guid)
+        if line.rstrip().endswith("*"):
+            active = guid
+    return schemes, active
+
+
+def read_power(runner: Runner, scheme: str = "SCHEME_CURRENT") -> dict:
     result = {}
     for name, (sub, setting) in POWER_SETTINGS.items():
-        res = runner(["powercfg", "/Q", "SCHEME_CURRENT", sub, setting])
+        res = runner(["powercfg", "/Q", scheme, sub, setting])
         result[name] = parse_powercfg(res.out) if res.ok else None
     return result
+
+
+def read_all_power(runner: Runner) -> tuple[dict, str]:
+    """Settings of every power plan, so a fix can be applied to all of them (switching plans must not undo it)."""
+    res = runner(["powercfg", "/L"])
+    schemes, active = parse_schemes(res.out) if res.ok else ([], "")
+    return {g: read_power(runner, g) for g in schemes}, active
 
 
 def take_snapshot(runner: Runner = run) -> Snapshot:
@@ -349,6 +415,7 @@ def take_snapshot(runner: Runner = run) -> Snapshot:
         if not res.ok:
             raise ValueError(res.err.strip() or f"exit code {res.rc}")
         system, devices = parse_inventory(_load_json(res.out))
+        res_inv_out = res.out
     except (ValueError, json.JSONDecodeError) as exc:
         raise ScanError(str(exc)) from exc
 
@@ -361,4 +428,9 @@ def take_snapshot(runner: Runner = run) -> Snapshot:
     except (ValueError, json.JSONDecodeError) as exc:
         warnings.append(f"state: {exc}")
 
-    return Snapshot(system, devices, state, read_power(runner), warnings)
+    try:
+        nodes = parse_nodes(_load_json(res_inv_out)) if res_inv_out else []
+    except (ValueError, json.JSONDecodeError):
+        nodes = []
+    schemes, active = read_all_power(runner)
+    return Snapshot(system, devices, state, read_power(runner), warnings, nodes, schemes, active)

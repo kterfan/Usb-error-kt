@@ -37,6 +37,9 @@ def matches(when: dict, system: SystemInfo, today: date) -> bool:
         return False
     if "laptop" in when and system.is_laptop != when["laptop"]:
         return False
+    if "bios_before" in when:
+        if system.bios_date is None or system.bios_date.isoformat() >= when["bios_before"]:
+            return False
     if "bios_older_than_days" in when:
         age = bios_age_days(system, today)
         if age is None or age <= when["bios_older_than_days"]:

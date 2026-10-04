@@ -29,18 +29,43 @@ def main(out_dir: str) -> None:
         if win.result is not None:
             break
         QtCore.QThread.msleep(20)
+    # wait for the online BIOS check (fake in demo mode)
+    for _ in range(200):
+        app.processEvents()
+        if win.result is not None and win.result.bios is not None:
+            break
+        QtCore.QThread.msleep(20)
+    # run the live test once (demo: a broken device "arrives" after a couple of polls)
+    win.live_duration, win.live_interval = 10, 0.05
+    win.start_live()
+    for _ in range(500):
+        app.processEvents()
+        if not win.live_running:
+            break
+        QtCore.QThread.msleep(20)
     for mode in ("light", "dark"):
         win.mode = mode
         win.apply_theme()
-        for page, name in ((0, "problems"), (1, "devices"), (2, "drivers"), (3, "system")):
-            win.nav_buttons[page].click()
-            if page == 0 and win.problem_cards:
+        for name in gui.PAGES:
+            win.go(name)
+            if name == "problems" and win.problem_cards:
                 win.problem_cards[0].toggle_details()
             pump(app)
             win.grab().save(os.path.join(out_dir, f"{mode}-{name}.png"))
-            if page == 0 and win.problem_cards:
+            if name == "problems" and win.problem_cards:
                 win.problem_cards[0].toggle_details()
-
+    # the confirmation dialog and the about box
+    for mode in ("light", "dark"):
+        win.mode = mode
+        win.apply_theme()
+        for name, dlg in (("confirm", win.make_confirm_dialog()), ("about", gui.AboutDialog(win))):
+            if dlg is None:
+                continue
+            dlg.resize(760, 720)
+            dlg.show()
+            pump(app)
+            dlg.grab().save(os.path.join(out_dir, f"{mode}-{name}.png"))
+            dlg.close()
 
 if __name__ == "__main__":
     main(sys.argv[1] if len(sys.argv) > 1 else "screenshots")

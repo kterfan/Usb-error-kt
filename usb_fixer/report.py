@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import guide, strings
+from . import about, guide, strings
 from .diagnostics import ScanResult
 
 
@@ -41,36 +41,30 @@ def finding_text(f) -> str:
 
 
 def build_report(result: ScanResult) -> str:
-    out = ["USB Fixer", "=" * 40, ""]
+    out = [about.banner(), f"{about.GITHUB_REPO}", "=" * 40, ""]
     out += system_lines(result.snapshot)
     out += ["", "=" * 40, ""]
     if not result.findings:
         out.append(strings.UI["no_findings"])
     for f in result.findings:
         out += [finding_text(f), "", "-" * 40, ""]
-    out += guide_lines(result.snapshot.system)
+    out += guide_lines(result.snapshot.system, getattr(result, "bios", None))
     for w in result.snapshot.warnings:
         out.append(f"⚠ {w}")
     return "\n".join(out)
 
 
-def card_lines(card) -> list:
-    lines = [f"■ {card.name}"]
-    if card.vendor:
-        lines.append(f"  {strings.UI['col_vendor']}: {card.vendor}")
-    if card.hardware_id:
-        sub = f" (SUBSYS_{card.subsystem})" if card.subsystem else ""
-        lines.append(f"  {strings.UI['col_hwid']}: {card.hardware_id}{sub}")
-    inst = " ".join(x for x in (card.provider, card.version, card.driver_date) if x)
-    if inst:
-        lines.append(f"  {strings.UI['col_driver']}: {inst}")
-    lines += [f"  - {a}" for a in card.advice]
-    lines += [f"  {label}: {url}" for label, url in card.links]
-    return lines
-
-
-def guide_lines(system) -> list:
-    out = ["=" * 40, strings.UI["guide_header"], strings.UI["guide_intro"], ""]
-    for card in guide.build_cards(system):
-        out += card_lines(card) + [""]
+def guide_lines(system, bios=None) -> list:
+    rep = guide.build_report(system, bios)
+    out = ["=" * 40, strings.UI["tab_guide"], "", ("✔ " if rep.verdict_ok else "! ") + rep.verdict_title, rep.verdict_text, ""]
+    for text, label, url in rep.actions:
+        out += [f"- {text}", f"  {label}: {url}"]
+    out.append("")
+    for c in rep.controllers:
+        out += [f"■ {c.title}", f"  {c.name} [{c.vendor}]", f"  درایور: {c.driver_text}", f"  {c.advice}"]
+        out += [f"  {k}: {v}" for k, v in c.tech]
+        out += [f"  {label}: {url}" for label, url in c.links]
+        out.append("")
+    out += ["■ BIOS: " + rep.bios_title, "  " + rep.bios_text]
+    out += [f"  {label}: {url}" for label, url in rep.bios_links]
     return out

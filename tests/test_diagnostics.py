@@ -154,8 +154,14 @@ class KnowledgeTests(unittest.TestCase):
     def rule(self, rid):
         return next(r for r in knowledge.load_rules() if r["id"] == rid)
 
-    def test_amd_rule_matches_b550_ryzen_5000(self):
-        self.assertTrue(knowledge.matches(self.rule("amd_usb_dropout")["when"], self.sysinfo(), TODAY))
+    def test_amd_rule_matches_b550_ryzen_5000_with_old_bios(self):
+        when = self.rule("amd_usb_dropout")["when"]
+        self.assertTrue(knowledge.matches(when, self.sysinfo(bios_date=date(2020, 11, 1)), TODAY))
+
+    def test_amd_rule_silent_with_fixed_or_unknown_bios(self):
+        when = self.rule("amd_usb_dropout")["when"]
+        self.assertFalse(knowledge.matches(when, self.sysinfo(bios_date=date(2021, 5, 1)), TODAY))
+        self.assertFalse(knowledge.matches(when, self.sysinfo(bios_date=None), TODAY))
 
     def test_amd_rule_skips_intel_and_new_ryzen(self):
         when = self.rule("amd_usb_dropout")["when"]
@@ -172,3 +178,110 @@ class KnowledgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NewChecksTests(unittest.TestCase):
+    def state_with(self, **part):
+        state = copy.deepcopy(demo.DEMO_STATE)
+        state["disks"][0]["partitions"][0].update(part)
+        return state
+
+    def test_raw_partition_is_an_error_and_never_auto_fixed(self):
+        found = scan(demo.DemoRunner(state=self.state_with(fs="RAW", letter="F")), TODAY).findings
+        raw = next(f for f in found if f.key == "usb_disk_raw")
+        self.assertEqual(raw.severity, "error")
+        self.assertIsNone(raw.fix_id)  # formatting is never offered
+        self.assertEqual(raw.manual, ["recover_data", "format_after_recovery"])
+        self.assertIn("F:", raw.detail)
+
+    def test_raw_without_letter_is_not_also_offered_a_letter(self):
+        found = scan(demo.DemoRunner(state=self.state_with(fs="RAW")), TODAY).findings
+        self.assertIn("usb_disk_raw", keys(found))
+        self.assertNotIn("usb_disk_no_letter", keys(found))
+
+    def test_every_finding_has_a_recommendation(self):
+        for f in scan(demo.DemoRunner(), TODAY).findings:
+            self.assertTrue(f.recommendation.strip(), f.key)
+
+    def bios(self, status, latest="3202"):
+        from usb_fixer import bios
+
+        return bios.BiosCheck(status, "3202", latest, date(2026, 5, 14), download_url="https://dlcdnets.asus.com/x.zip", source="ASUS")
+
+    def test_current_bios_silences_old_bios_warnings(self):
+        # the user's case: an up-to-date BIOS must not be told it is old
+        snap = scan(demo.DemoRunner(), TODAY).snapshot
+        found = keys(analyze(snap, TODAY, bios=self.bios("current")))
+        self.assertNotIn("amd_usb_dropout", found)
+        self.assertNotIn("bios_old", found)
+        self.assertNotIn("bios_update", found)
+
+    def test_newer_bios_replaces_generic_old_bios_finding(self):
+        snap = scan(demo.DemoRunner(), TODAY).snapshot
+        found = analyze(snap, TODAY, bios=self.bios("update", "5220"))
+        self.assertNotIn("bios_old", keys(found))
+        upd = next(f for f in found if f.key == "bios_update")
+        self.assertIn("5220", upd.detail)
+        self.assertEqual(upd.links[0][1], "https://dlcdnets.asus.com/x.zip")
+
+    def test_unknown_online_answer_keeps_offline_rules(self):
+        snap = scan(demo.DemoRunner(), TODAY).snapshot
+        found = keys(analyze(snap, TODAY, bios=self.bios("unknown")))
+        self.assertIn("amd_usb_dropout", found)
+        self.assertIn("bios_old", found)
+
+    def test_online_scan_uses_fetch(self):
+        result = scan(demo.DemoRunner(), TODAY, online=True, fetch=demo.fake_asus_fetch)
+        self.assertEqual(result.bios.latest, "5220")
+        self.assertIn("bios_update", keys(result.findings))
+
+
+class CliTests(unittest.TestCase):
+    def run_cli(self, *args):
+        import contextlib
+        import io
+
+        from usb_fixer.__main__ import main
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            try:
+                code = main(list(args))
+            except SystemExit as exc:  # argparse --version
+                code = exc.code
+        return code, out.getvalue()
+
+    def test_version_names_the_author(self):
+        from usb_fixer import __version__, about
+
+        code, text = self.run_cli("--version")
+        self.assertEqual(code, 0)
+        self.assertIn(__version__, text)
+        self.assertIn("Erfan Esmailzadeh", text)
+        self.assertIn("عرفان اسمعیل زاده", text)
+        self.assertIn(about.GITHUB_PROFILE, text)
+
+    def test_demo_scan_report(self):
+        code, text = self.run_cli("--demo", "--scan")
+        self.assertEqual(code, 0)
+        self.assertTrue(text.startswith("USB Fixer"))
+        self.assertIn("[خطا]", text)
+
+
+class ReportFileTests(unittest.TestCase):
+    def test_report_option_writes_utf8_file(self):
+        import contextlib
+        import io
+        import os
+        import tempfile
+
+        from usb_fixer.__main__ import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "r.txt")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["--demo", "--scan", "--report", path]), 0)
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        self.assertIn("Erfan Esmailzadeh", text)
+        self.assertIn("دستگاه", text)

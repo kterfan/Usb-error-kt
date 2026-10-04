@@ -4,4 +4,6 @@ from PySide6 import QtGui  # noqa: F401  (re-exported for tests)
 from PySide6.QtCore import Qt  # noqa: F401
 
 from .strings import UI  # noqa: F401
-from .ui.window import FONT_DIR, FONT_FAMILY, MainWindow, make_app, run_gui  # noqa: F401
+from .ui.window import (  # noqa: F401
+    FONT_DIR, FONT_FAMILY, PAGES, AboutDialog, ConfirmDialog, MainWindow, make_app, run_gui,
+)

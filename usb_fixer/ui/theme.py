@@ -47,6 +47,7 @@ QFrame#card[sev="info"] {{ border-right: 4px solid {p['info']}; }}
 QFrame#card[sev="ok"] {{ border-right: 4px solid {p['ok']}; }}
 QFrame#card QLabel {{ background: transparent; }}
 
+QFrame#advice {{ background: {p['surface2']}; border: 1px solid {p['border']}; border-radius: 10px; }}
 QFrame#hero {{ border-radius: 18px; border: 1px solid {p['border']}; }}
 QFrame#hero[state="ok"] {{ background: {p['hero_ok']}; }}
 QFrame#hero[state="warn"] {{ background: {p['hero_warn']}; }}
@@ -63,6 +64,8 @@ QLabel#chip {{ background: {p['chip_bg']}; color: {p['sub']}; border-radius: 9px
 QLabel#chip[kind="fix"] {{ background: {p['ok']}; color: #ffffff; }}
 QLabel#chip[kind="manual"] {{ background: {p['chip_bg']}; color: {p['warn']}; }}
 QLabel#chip[kind="error"] {{ color: {p['error']}; }}
+QLabel#footer {{ color: {p['sub']}; font-size: 9pt; }}
+QLabel#bigNumber {{ font-size: 28pt; font-weight: bold; color: {p['primary']}; }}
 
 QPushButton {{ background: {p['surface']}; border: 1px solid {p['border']}; border-radius: 10px; padding: 7px 16px; }}
 QPushButton:hover {{ background: {p['hover']}; }}

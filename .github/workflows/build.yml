@@ -18,13 +18,20 @@ jobs:
         shell: pwsh
         run: python -m pip install -r requirements-dev.txt
 
-      - name: Unit tests (includes the Qt window, offscreen)
+      - name: Unit tests (logic + the Qt window, offscreen)
         shell: pwsh
-        continue-on-error: true
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           python -m unittest discover -s tests -t . -v 2>&1 | Tee-Object -FilePath test-log.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Real Windows tests (fix -> revert -> guard -> undo on this runner, scheduled task, live-test scripts, ASUS API)
+        shell: pwsh
+        env:
+          USB_FIXER_REAL_TESTS: "1"
+        run: |
+          python -m unittest discover -s tests_windows -t . -v 2>&1 | Tee-Object -FilePath real-test-log.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Screenshots of the window on Windows (demo data)
@@ -32,31 +39,67 @@ jobs:
         continue-on-error: true
         run: python tools/screenshot.py screenshots
 
-      - name: Real scan on the Windows runner (smoke test of the PowerShell scripts)
+      - name: Real scan on the Windows runner (console report)
         shell: pwsh
-        continue-on-error: true
         run: |
           python -m usb_fixer --scan 2>&1 | Tee-Object -FilePath scan-report.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build exe
+      - name: Build exe (with version and author in its Details tab)
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --onefile --windowed --name USB-Fixer --uac-admin --exclude-module tkinter --add-data "usb_fixer\data\knowledge.json;usb_fixer\data" --add-data "usb_fixer\data\fonts;usb_fixer\data\fonts" run_usb_fixer.py
+          python tools/version_info.py version_info.txt
+          python -m PyInstaller --noconfirm --onefile --windowed --name USB-Fixer --uac-admin --version-file version_info.txt --exclude-module tkinter --add-data "usb_fixer\data\knowledge.json;usb_fixer\data" --add-data "usb_fixer\data\fonts;usb_fixer\data\fonts" run_usb_fixer.py
 
-      - name: Smoke test the built exe (console scan)
+      - name: Check the built exe
         shell: pwsh
-        continue-on-error: true
         run: |
-          dist\USB-Fixer.exe --scan | Out-File -Encoding utf8 exe-scan.txt
+          $info = (Get-Item dist\USB-Fixer.exe).VersionInfo
+          $info | Format-List CompanyName, ProductName, FileVersion, ProductVersion, LegalCopyright
+          $version = python -c "import usb_fixer; print(usb_fixer.__version__)"
+          if ($info.CompanyName -ne "Erfan Esmailzadeh" -or $info.ProductVersion -ne $version) { throw "version info missing" }
+          Start-Process dist\USB-Fixer.exe -ArgumentList "--scan", "--offline", "--report", "$PWD\exe-scan.txt" -Wait
           Get-Content exe-scan.txt -TotalCount 15
+          if (-not (Select-String -Path exe-scan.txt -Pattern "Erfan Esmailzadeh" -Quiet)) { throw "exe scan did not run" }
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          $version = python -c "import usb_fixer; print(usb_fixer.__version__)"
+          & $iscc "/DAppVersion=$version" installer\usb_fixer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist
+
+      - name: Test the installer (silent install, then uninstall)
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\USB-Fixer-Setup-*.exe | Select-Object -First 1
+          $dir = "$env:RUNNER_TEMP\USB Fixer test"
+          Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$dir`"" -Wait
+          if (-not (Test-Path "$dir\USB-Fixer.exe")) { throw "not installed" }
+          $key = Get-ChildItem HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall, HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall | Get-ItemProperty | Where-Object { $_.DisplayName -like "USB Fixer*" }
+          $key | Format-List DisplayName, DisplayVersion, Publisher, URLInfoAbout
+          if ($key.Publisher -ne "Erfan Esmailzadeh") { throw "publisher missing" }
+          schtasks /Create /TN "USB Fixer Guard" /TR "`"$dir\USB-Fixer.exe`" --guard" /SC ONLOGON /RL HIGHEST /F | Out-Null
+          Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          Start-Sleep -Seconds 3
+          if (Test-Path "$dir\USB-Fixer.exe") { throw "not uninstalled" }
+          schtasks /Query /TN "USB Fixer Guard" 2>$null
+          if ($LASTEXITCODE -eq 0) { throw "guard task was left behind" }
+          Write-Output "installer OK"
+          exit 0
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: USB-Fixer-windows
           path: |
             dist/USB-Fixer.exe
+            dist/USB-Fixer-Setup-*.exe
             test-log.txt
+            real-test-log.txt
             scan-report.txt
             exe-scan.txt
             screenshots/*.png

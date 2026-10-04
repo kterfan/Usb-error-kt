@@ -4,7 +4,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from usb_fixer import backup, demo, fixes
+from usb_fixer import backup, demo, fixes, snapshot
 from usb_fixer.diagnostics import Finding, scan
 from usb_fixer.system import CmdResult, decode_powershell_cmd
 
@@ -35,12 +35,19 @@ class StepTests(unittest.TestCase):
         self.assertTrue(all(c[:2] == ["pnputil", "/remove-device"] for c in cmds))
         self.assertEqual({c[2] for c in cmds}, {"USB\\VID_0781&PID_5581\\0123456789", "USB\\VID_090C&PID_1000\\ABCDEF"})
 
-    def test_suspend_sets_ac_dc_and_activates(self):
+    def test_suspend_applies_to_every_power_plan_and_machine_wide(self):
         cmds = self.cmds("disable_suspend")
+        balanced, high = "381b4222-f694-41f0-9685-ff5bb260df2e", "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+        for scheme in (balanced, high):
+            self.assertIn(["powercfg", "/SETACVALUEINDEX", scheme, snapshot.USB_SUBGROUP, snapshot.USB_SELECTIVE_SUSPEND, "0"], cmds)
+            self.assertIn(["powercfg", "/SETDCVALUEINDEX", scheme, snapshot.USB_SUBGROUP, snapshot.USB_SELECTIVE_SUSPEND, "0"], cmds)
+        self.assertIn(["powercfg", "/SETACTIVE", "SCHEME_CURRENT"], cmds)
+        self.assertIn(["reg", "add", fixes.REG_USB_SERVICE, "/v", "DisableSelectiveSuspend", "/t", "REG_DWORD", "/d", "1", "/f"], cmds)
+
+    def test_suspend_without_plan_list_uses_active_plan(self):
+        f = Finding("selective_suspend", "warn", fix_id="disable_suspend", targets=[(1, 0)])
+        cmds = [s.cmd for s in fixes.build_steps(f)]
         self.assertEqual(cmds[0][:3], ["powercfg", "/SETACVALUEINDEX", "SCHEME_CURRENT"])
-        self.assertEqual(cmds[0][-1], "0")
-        self.assertEqual(cmds[1][1], "/SETDCVALUEINDEX")
-        self.assertEqual(cmds[2], ["powercfg", "/SETACTIVE", "SCHEME_CURRENT"])
 
     def test_registry_fixes_backup_their_key(self):
         step = fixes.build_steps(by_fix(self.findings, "disable_fast_startup"))[0]
@@ -83,7 +90,8 @@ class ExecuteTests(unittest.TestCase):
         self.assertEqual(result.ok, len(steps))
         self.assertEqual(data["powercfg"][0]["ac"], 1)
         self.assertEqual(data["hub_power"], ["USB\\ROOT_HUB30\\4&1B2C3D&0&0_0"])
-        self.assertEqual(len(data["reg_files"]), 1)
+        self.assertEqual(len(data["reg_files"]), 2)  # Session Manager\Power and Services\USB
+        self.assertEqual(len(data["powercfg"]), 2)  # one entry per power plan
         self.assertEqual(runner.calls[-1], ["pnputil", "/scan-devices"])
         # backup happens before the first change
         first_change = next(i for i, c in enumerate(runner.calls) if c[:2] == ["powercfg", "/SETACVALUEINDEX"])

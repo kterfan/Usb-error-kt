@@ -40,16 +40,22 @@ def create_restore_point(runner: Runner, log: Log) -> bool:
     return False
 
 
-def export_registry(keys: list, directory: Path, runner: Runner, log: Log) -> list:
-    files = []
+def export_registry(keys: list, directory: Path, runner: Runner, log: Log) -> tuple:
+    """Export each key to a .reg file. Returns (files, keys that could not be exported, i.e. do not exist yet)."""
+    files, missing = [], []
     for i, key in enumerate(keys):
         target = directory / f"reg{i}.reg"
         res = runner(["reg", "export", key, str(target), "/y"])
         if res.ok:
             files.append(str(target))
         else:
-            log(f"از این کلید پشتیبان گرفته نشد (شاید وجود نداره): {key}")
-    return files
+            missing.append(key)
+            log(f"این کلید هنوز وجود نداشت؛ موقع برگرداندن، مقدار جدید پاک می‌شه: {key}")
+    return files, missing
+
+
+def reg_value_exists(runner: Runner, key: str, name: str) -> bool:
+    return runner(["reg", "query", key, "/v", name]).ok
 
 
 def write_undo(directory: Path, data: dict) -> None:
@@ -95,12 +101,18 @@ def undo(directory: Path, runner: Runner, log: Log) -> int:
 
     for f in data.get("reg_files", []):
         step(f"reg import {f}", ["reg", "import", f])
+    for key, name in data.get("reg_delete", []):
+        step(f"reg delete {key} /v {name}", ["reg", "delete", key, "/v", name, "/f"])
     for p in data.get("powercfg", []):
-        sub, setting = p["subgroup"], p["setting"]
-        step("powercfg AC", ["powercfg", "/SETACVALUEINDEX", "SCHEME_CURRENT", sub, setting, str(p["ac"])])
-        step("powercfg DC", ["powercfg", "/SETDCVALUEINDEX", "SCHEME_CURRENT", sub, setting, str(p["dc"])])
+        sub, setting, scheme = p["subgroup"], p["setting"], p.get("scheme", "SCHEME_CURRENT")
+        step(f"powercfg AC {scheme}", ["powercfg", "/SETACVALUEINDEX", scheme, sub, setting, str(p["ac"])])
+        step(f"powercfg DC {scheme}", ["powercfg", "/SETDCVALUEINDEX", scheme, sub, setting, str(p["dc"])])
     if data.get("powercfg"):
         step("powercfg /SETACTIVE", ["powercfg", "/SETACTIVE", "SCHEME_CURRENT"])
     if data.get("hub_power"):
         step("hub power management", powershell_cmd(hub_power_script(data["hub_power"], True)))
+    if data.get("fix_ids"):
+        from . import state  # local import: state imports backup
+
+        state.forget(data["fix_ids"], directory.parent)
     return failed
