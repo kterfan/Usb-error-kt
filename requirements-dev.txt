@@ -1,0 +1,2 @@
+# Only needed to build the .exe. The program itself uses the Python standard library only.
+pyinstaller

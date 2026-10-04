@@ -1,0 +1,165 @@
+import copy
+import unittest
+from datetime import date
+
+from usb_fixer import demo, knowledge, snapshot
+from usb_fixer.diagnostics import analyze, scan
+from usb_fixer.system import CmdResult, decode_powershell_cmd, powershell_cmd
+
+TODAY = date(2026, 10, 4)
+
+
+def keys(findings):
+    return [f.key for f in findings]
+
+
+class SystemTests(unittest.TestCase):
+    def test_powershell_roundtrip(self):
+        script = "Write-Output 'سلام \"x\" $y'"
+        cmd = powershell_cmd(script)
+        self.assertIn("-EncodedCommand", cmd)
+        self.assertTrue(decode_powershell_cmd(cmd).endswith(script))
+
+
+class ParseTests(unittest.TestCase):
+    def test_powercfg_takes_last_two_values(self):
+        self.assertEqual(snapshot.parse_powercfg(demo.POWERCFG_OUT), (1, 1))
+
+    def test_powercfg_mixed_values(self):
+        text = "x 0x00000000 y 0x00000001 AC 0x00000001 DC 0x00000000"
+        self.assertEqual(snapshot.parse_powercfg(text), (1, 0))
+
+    def test_powercfg_garbage(self):
+        self.assertIsNone(snapshot.parse_powercfg("nothing here"))
+
+    def test_single_object_instead_of_list(self):
+        inv = copy.deepcopy(demo.DEMO_INVENTORY)
+        inv["controllers"] = inv["controllers"][0]  # PowerShell collapses 1-item arrays sometimes
+        inv["devices"] = inv["devices"][0]
+        system, devices = snapshot.parse_inventory(inv)
+        self.assertEqual(len(system.controllers), 1)
+        self.assertEqual(len(devices), 1)
+
+    def test_controller_vendor(self):
+        system, _ = snapshot.parse_inventory(demo.DEMO_INVENTORY)
+        self.assertEqual([c.vendor for c in system.controllers], ["AMD", "ASMedia"])
+
+    def test_bad_inventory_raises_scan_error(self):
+        class Bad:
+            def __call__(self, cmd):
+                return CmdResult(0, "not json")
+
+        with self.assertRaises(snapshot.ScanError):
+            snapshot.take_snapshot(Bad())
+
+    def test_failed_state_script_is_only_a_warning(self):
+        runner = demo.DemoRunner()
+        orig = runner.__call__
+
+        def flaky(cmd):
+            script = decode_powershell_cmd(cmd)
+            if script and "# SCRIPT:state" in script:
+                return CmdResult(1, "", "boom")
+            return orig(cmd)
+
+        snap = snapshot.take_snapshot(flaky)
+        self.assertEqual(len(snap.warnings), 1)
+        self.assertEqual(snap.state.hub_power, [])
+
+
+class AnalyzeTests(unittest.TestCase):
+    def setUp(self):
+        self.result = scan(demo.DemoRunner(), TODAY)
+        self.keys = keys(self.result.findings)
+
+    def test_demo_machine_findings(self):
+        for expected in (
+            "device_errors", "unknown_devices", "ghost_devices", "selective_suspend", "hub_power",
+            "fast_startup", "write_protect", "usb_disk_no_letter", "event_errors", "bios_old",
+            "ms_default_driver", "amd_usb_dropout",
+        ):
+            self.assertIn(expected, self.keys)
+        self.assertNotIn("no_controller", self.keys)
+        self.assertNotIn("pcie_aspm", self.keys)  # demo ASPM is off
+
+    def test_sorted_by_severity(self):
+        order = {"error": 0, "warn": 1, "info": 2}
+        sev = [order[f.severity] for f in self.result.findings]
+        self.assertEqual(sev, sorted(sev))
+
+    def test_unknown_device_not_double_counted_as_error(self):
+        errs = next(f for f in self.result.findings if f.key == "device_errors")
+        self.assertEqual([t[0] for t in errs.targets], ["USB\\VID_046D&PID_C52B\\5&2F1A&0&1"])
+
+    def test_ghosts(self):
+        g = next(f for f in self.result.findings if f.key == "ghost_devices")
+        self.assertEqual(len(g.targets), 2)
+
+    def test_every_finding_renders(self):
+        for f in self.result.findings:
+            self.assertTrue(f.title)
+            self.assertTrue(f.detail)
+            for m in f.manual:
+                self.assertTrue(f.manual_texts)
+
+    def test_support_link_added_for_bios_advice(self):
+        f = next(f for f in self.result.findings if f.key == "bios_old")
+        self.assertTrue(f.links and f.links[0][1].startswith("https://"))
+
+    def test_clean_machine_has_no_findings(self):
+        inv = copy.deepcopy(demo.DEMO_INVENTORY)
+        inv["board_product"] = "PRIME Z790-P"
+        inv["cpu"] = "Intel(R) Core(TM) i7-13700K"
+        inv["bios_date"] = "2026-01-01"
+        inv["devices"] = inv["devices"][:1]
+        for c in inv["controllers"]:
+            c["driver_provider"] = "Intel"
+        state = {"services": {"PlugPlay": 4}, "usbstor_start": 3, "uaspstor_start": 3, "hub_power": [], "disks": [], "events": []}
+        runner = demo.DemoRunner(inv, state, power="Current AC Power Setting Index: 0x00000000\nCurrent DC Power Setting Index: 0x00000000\n")
+        self.assertEqual(scan(runner, TODAY).findings, [])
+
+    def test_no_controller(self):
+        inv = copy.deepcopy(demo.DEMO_INVENTORY)
+        inv["controllers"] = []
+        findings = scan(demo.DemoRunner(inv), TODAY).findings
+        self.assertIn("no_controller", keys(findings))
+
+    def test_usbstor_disabled_and_offline_disk(self):
+        state = copy.deepcopy(demo.DEMO_STATE)
+        state["usbstor_start"] = 4
+        state["deny_all"] = 1
+        state["disks"][0]["offline"] = True
+        findings = scan(demo.DemoRunner(state=state), TODAY).findings
+        for k in ("usbstor_disabled", "storage_policy", "usb_disk_offline"):
+            self.assertIn(k, keys(findings))
+        # offline disks must not also ask for a drive letter
+        self.assertNotIn("usb_disk_no_letter", keys(findings))
+
+
+class KnowledgeTests(unittest.TestCase):
+    def sysinfo(self, **kw):
+        base = dict(board_manufacturer="MSI", board_product="MAG B550 TOMAHAWK", cpu="AMD Ryzen 7 5800X 8-Core Processor")
+        base.update(kw)
+        return snapshot.SystemInfo(**base)
+
+    def rule(self, rid):
+        return next(r for r in knowledge.load_rules() if r["id"] == rid)
+
+    def test_amd_rule_matches_b550_ryzen_5000(self):
+        self.assertTrue(knowledge.matches(self.rule("amd_usb_dropout")["when"], self.sysinfo(), TODAY))
+
+    def test_amd_rule_skips_intel_and_new_ryzen(self):
+        when = self.rule("amd_usb_dropout")["when"]
+        self.assertFalse(knowledge.matches(when, self.sysinfo(board_product="Z790-P", cpu="Intel Core i5"), TODAY))
+        self.assertFalse(knowledge.matches(when, self.sysinfo(cpu="AMD Ryzen 7 7800X3D"), TODAY))
+        self.assertFalse(knowledge.matches(when, self.sysinfo(board_product="X670E"), TODAY))
+
+    def test_bios_age(self):
+        when = self.rule("bios_old")["when"]
+        self.assertFalse(knowledge.matches(when, self.sysinfo(bios_date=date(2025, 6, 1)), TODAY))
+        self.assertTrue(knowledge.matches(when, self.sysinfo(bios_date=date(2020, 1, 1)), TODAY))
+        self.assertFalse(knowledge.matches(when, self.sysinfo(bios_date=None), TODAY))
+
+
+if __name__ == "__main__":
+    unittest.main()

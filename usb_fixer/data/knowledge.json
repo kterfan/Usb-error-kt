@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {
+      "id": "amd_usb_dropout",
+      "when": {
+        "board_regex": "(B450|X470|B550|X570|A520)",
+        "cpu_regex": "Ryzen\\s+\\d+\\s+[35]\\d{3}"
+      },
+      "severity": "warn",
+      "title": "مشکل شناخته‌شدهٔ قطع و وصل USB روی مادربردهای AMD سری 400/500",
+      "detail": "روی مادربردهای B450/X470/B550/X570/A520 با پردازنده‌های Ryzen 3000 و 5000، گزارش‌های زیادی از قطع و وصل شدن تصادفی USB بوده (کیبورد و موس، هارد اکسترنال، هدست VR). AMD این مشکل رو با AGESA نسخهٔ 1.2.0.2 به بعد (آپدیت BIOS) برطرف کرده. برنامه از داخل ویندوز نمی‌تونه نسخهٔ AGESA رو ببینه؛ پس اگه BIOS رو آپدیت نکردی و قطعی داری، اول اون رو آپدیت کن.",
+      "manual": ["update_bios", "update_chipset", "amd_pcie_gen3", "amd_cstate"]
+    },
+    {
+      "id": "bios_old",
+      "when": {"bios_older_than_days": 1095},
+      "builtin": "bios_old",
+      "severity": "info",
+      "manual": ["update_bios"]
+    }
+  ]
+}
