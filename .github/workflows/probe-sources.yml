@@ -1,0 +1,73 @@
+name: Probe driver sources (read-only)
+
+# Only GET requests, nothing is installed. Used to learn the real structure of the
+# official driver sources before writing the code that parses them.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      UA: "USB-Fixer-probe/0.1 (+https://github.com/kterfan/Usb-error-kt)"
+    steps:
+      - name: Intel DSA data feed
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force probe | Out-Null
+          $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://dsadata.intel.com/data/en"
+          "status=$($r.StatusCode) type=$($r.Headers['Content-Type']) length=$($r.RawContentLength)" | Tee-Object probe/intel-summary.txt
+          $r.Content.Substring(0, [Math]::Min(6000, $r.Content.Length)) | Out-File -Encoding utf8 probe/intel-head.txt
+          Get-Content probe/intel-head.txt -TotalCount 40
+
+      - name: Microsoft Update Catalog search by hardware ID
+        continue-on-error: true
+        run: |
+          $q = [uri]::EscapeDataString('PCI\VEN_8086&DEV_A0ED')
+          $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://www.catalog.update.microsoft.com/Search.aspx?q=$q"
+          $c = $r.Content
+          "status=$($r.StatusCode) length=$($c.Length)" | Tee-Object probe/catalog-summary.txt
+          "rows: " + ([regex]::Matches($c, '<tr id="[0-9a-fA-F-]+_R\d+"')).Count | Tee-Object -Append probe/catalog-summary.txt
+          "viewstate present: " + ($c -match '__VIEWSTATE') | Tee-Object -Append probe/catalog-summary.txt
+          $i = $c.IndexOf('<table')
+          if ($i -ge 0) { $c.Substring($i, [Math]::Min(7000, $c.Length - $i)) | Out-File -Encoding utf8 probe/catalog-results.txt }
+          $c | Select-String -Pattern 'goToDetails|downloadFiles|DownloadDialog' -AllMatches | Select-Object -First 8 | ForEach-Object { $_.Line.Trim().Substring(0, [Math]::Min(300, $_.Line.Trim().Length)) } | Out-File -Encoding utf8 probe/catalog-js.txt
+          Get-Content probe/catalog-summary.txt
+          Get-Content probe/catalog-js.txt
+
+      - name: AMD chipset driver page
+        continue-on-error: true
+        run: |
+          $r = Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 60 "https://www.amd.com/en/support/downloads/drivers.html/chipsets/am5/x670.html"
+          $c = $r.Content
+          "status=$($r.StatusCode) length=$($c.Length)" | Tee-Object probe/amd-summary.txt
+          [regex]::Matches($c, 'https://drivers\.amd\.com[^"''\s<>\\]+') | ForEach-Object { $_.Value } | Sort-Object -Unique | Select-Object -First 20 | Tee-Object -Append probe/amd-links.txt
+          [regex]::Matches($c, '\b\d{1,2}\.\d{2}\.\d{2}\.\d{3}\b') | ForEach-Object { $_.Value } | Sort-Object -Unique | Select-Object -First 20 | Tee-Object -Append probe/amd-versions.txt
+
+      - name: Dell driver pack catalog
+        continue-on-error: true
+        run: |
+          Invoke-WebRequest -UseBasicParsing -UserAgent $env:UA -TimeoutSec 120 "https://downloads.dell.com/catalog/DriverPackCatalog.cab" -OutFile probe/DriverPackCatalog.cab
+          (Get-Item probe/DriverPackCatalog.cab).Length | Tee-Object probe/dell-summary.txt
+          expand.exe probe/DriverPackCatalog.cab -F:* probe | Out-Null
+          Get-ChildItem probe -Filter *.xml | ForEach-Object { "$($_.Name) $($_.Length)" } | Tee-Object -Append probe/dell-summary.txt
+          Get-Content (Get-ChildItem probe -Filter *.xml | Select-Object -First 1).FullName -TotalCount 25
+          Remove-Item probe/DriverPackCatalog.cab
+
+      - name: Windows Update driver search via COM (read-only)
+        continue-on-error: true
+        run: |
+          $s = New-Object -ComObject Microsoft.Update.Session
+          $u = $s.CreateUpdateSearcher()
+          $res = $u.Search("IsInstalled=0 and Type='Driver'")
+          "found=$($res.Updates.Count) resultCode=$($res.ResultCode)" | Tee-Object probe/wu-summary.txt
+          $res.Updates | Select-Object -First 10 | ForEach-Object { "{0} | {1} | {2} | {3}" -f $_.Title, $_.DriverModel, $_.DriverVerDate, $_.DriverClass } | Tee-Object -Append probe/wu-summary.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-output
+          path: probe/
