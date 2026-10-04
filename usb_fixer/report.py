@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import strings
+from . import guide, strings
 from .diagnostics import ScanResult
 
 
@@ -48,6 +48,29 @@ def build_report(result: ScanResult) -> str:
         out.append(strings.UI["no_findings"])
     for f in result.findings:
         out += [finding_text(f), "", "-" * 40, ""]
+    out += guide_lines(result.snapshot.system)
     for w in result.snapshot.warnings:
         out.append(f"⚠ {w}")
     return "\n".join(out)
+
+
+def card_lines(card) -> list:
+    lines = [f"■ {card.name}"]
+    if card.vendor:
+        lines.append(f"  {strings.UI['col_vendor']}: {card.vendor}")
+    if card.hardware_id:
+        sub = f" (SUBSYS_{card.subsystem})" if card.subsystem else ""
+        lines.append(f"  {strings.UI['col_hwid']}: {card.hardware_id}{sub}")
+    inst = " ".join(x for x in (card.provider, card.version, card.driver_date) if x)
+    if inst:
+        lines.append(f"  {strings.UI['col_driver']}: {inst}")
+    lines += [f"  - {a}" for a in card.advice]
+    lines += [f"  {label}: {url}" for label, url in card.links]
+    return lines
+
+
+def guide_lines(system) -> list:
+    out = ["=" * 40, strings.UI["guide_header"], strings.UI["guide_intro"], ""]
+    for card in guide.build_cards(system):
+        out += card_lines(card) + [""]
+    return out

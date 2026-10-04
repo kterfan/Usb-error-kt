@@ -8,7 +8,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
-from . import backup, fixes, report, strings
+from . import backup, fixes, guide, report, strings
 from .diagnostics import scan
 from .system import is_admin, relaunch_as_admin
 
@@ -89,6 +89,29 @@ class App(tk.Tk):
             self.dev_tree.heading(col, text=label)
             self.dev_tree.column(col, width=width)
         self.dev_tree.pack(fill="both", expand=True)
+
+        # Manual driver update guide tab
+        guide_tab = tk.Frame(self.nb)
+        self.nb.add(guide_tab, text=UI["tab_guide"])
+        gpane = ttk.PanedWindow(guide_tab, orient="vertical")
+        gpane.pack(fill="both", expand=True)
+        gtop = tk.Frame(gpane)
+        self.guide_tree = ttk.Treeview(
+            gtop, columns=("name", "vendor", "hwid", "driver", "date"), show="headings", height=6, selectmode="browse"
+        )
+        for col, label, width in (
+            ("name", UI["col_name"], 330), ("vendor", UI["col_vendor"], 90), ("hwid", UI["col_hwid"], 170),
+            ("driver", UI["col_driver"], 200), ("date", UI["col_date"], 90),
+        ):
+            self.guide_tree.heading(col, text=label)
+            self.guide_tree.column(col, width=width)
+        self.guide_tree.pack(fill="both", expand=True)
+        self.guide_tree.bind("<<TreeviewSelect>>", self.on_guide_select)
+        tk.Button(gtop, text=UI["copy_id"], command=self.on_copy_id).pack(anchor="e", pady=4)
+        gpane.add(gtop, weight=1)
+        self.guide_detail = self._text(gpane, height=12)
+        gpane.add(self.guide_detail, weight=2)
+        self.cards: list = []
 
         # System tab
         self.sys_text = self._text(self.nb)
@@ -177,6 +200,15 @@ class App(tk.Tk):
             status = f"خطا {d.error_code}" if d.has_error else ("غایب" if d.is_ghost else d.status)
             self.dev_tree.insert("", "end", values=(d.name, status, d.instance_id))
         self._write(self.sys_text, [(line, None) for line in report.system_lines(result.snapshot)])
+        self.cards = guide.build_cards(result.snapshot.system)
+        self.guide_tree.delete(*self.guide_tree.get_children())
+        for i, card in enumerate(self.cards):
+            self.guide_tree.insert(
+                "", "end", iid=str(i),
+                values=(card.name, card.vendor, card.hardware_id, f"{card.provider} {card.version}".strip(), card.driver_date),
+            )
+        if self.cards:
+            self.guide_tree.selection_set("0")
         for w in result.snapshot.warnings:
             self.log("⚠ " + w)
 
@@ -210,6 +242,34 @@ class App(tk.Tk):
                 self.detail.tag_add(tag, start, "end-1c")
                 self.detail.tag_bind(tag, "<Button-1>", lambda _e, u=url: webbrowser.open(u))
             self.detail.configure(state="disabled")
+
+    # ---------- manual update guide ----------
+    def on_guide_select(self, _event=None) -> None:
+        sel = self.guide_tree.selection()
+        if not sel:
+            return
+        card = self.cards[int(sel[0])]
+        lines = [(card.name, "h")] + [(line, None) for line in report.card_lines(card)[1:] if not line.strip().startswith("http") and "http" not in line]
+        lines += [("", None), (UI["links_header"], "h")]
+        self._write(self.guide_detail, lines)
+        self.guide_detail.configure(state="normal")
+        for label, url in card.links:
+            start = self.guide_detail.index("end-1c")
+            self.guide_detail.insert("end", label + "\n", ("rtl", "link"))
+            tag = f"gurl{abs(hash(url))}"
+            self.guide_detail.tag_add(tag, start, "end-1c")
+            self.guide_detail.tag_bind(tag, "<Button-1>", lambda _e, u=url: webbrowser.open(u))
+        self.guide_detail.configure(state="disabled")
+
+    def on_copy_id(self) -> None:
+        sel = self.guide_tree.selection()
+        if not sel:
+            return
+        card = self.cards[int(sel[0])]
+        if card.hardware_id:
+            self.clipboard_clear()
+            self.clipboard_append(card.hardware_id)
+            self.log(f"{UI['copied']} {card.hardware_id}")
 
     # ---------- actions ----------
     def on_admin(self) -> None:
