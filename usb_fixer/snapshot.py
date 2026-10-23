@@ -76,7 +76,7 @@ $svc = @{}
 foreach ($n in 'PlugPlay') { $s = Get-Service -Name $n; if ($s) { $svc[$n] = [int]$s.Status } else { $svc[$n] = $null } }
 $disks = @(Get-Disk | Where-Object { $_.BusType -eq 'USB' } | ForEach-Object {
   $d = $_
-  $parts = @(Get-Partition -DiskNumber $d.Number | ForEach-Object { $v = $_ | Get-Volume -ErrorAction SilentlyContinue; [pscustomobject]@{ number=[int]$_.PartitionNumber; letter="$($_.DriveLetter)".Trim(); type="$($_.Type)"; size=[int64]$_.Size; fs="$($v.FileSystemType)"; health="$($v.HealthStatus)" } })
+  $parts = @(Get-Partition -DiskNumber $d.Number | ForEach-Object { $v = $_ | Get-Volume -ErrorAction SilentlyContinue; [pscustomobject]@{ number=[int]$_.PartitionNumber; letter=("$($_.DriveLetter)" -replace '[^A-Za-z]', ''); type="$($_.Type)"; size=[int64]$_.Size; fs="$($v.FileSystemType)"; health="$($v.HealthStatus)" } })
   [pscustomobject]@{ number=[int]$d.Number; name="$($d.FriendlyName)"; offline=[bool]$d.IsOffline; readonly=[bool]$d.IsReadOnly; size=[int64]$d.Size; partitions=$parts }
 })
 $hub = @(Get-CimInstance -Namespace root/wmi -ClassName MSPower_DeviceEnable | Where-Object { $_.InstanceName -like 'USB*' -and $_.Enable } | ForEach-Object { $_.InstanceName })
@@ -176,6 +176,20 @@ class SystemInfo:
     def is_virtual(self) -> bool:
         text = f"{self.system_manufacturer} {self.system_model} {self.board_manufacturer} {self.board_product}"
         return bool(re.search(r"virtual machine|vmware|virtualbox|\bkvm\b|qemu|hyper-v|xen|parallels", text, re.IGNORECASE))
+
+
+# Get-Partition types that never get a drive letter. Everything else (Basic, IFS, FAT32, Huge...) holds data.
+NON_DATA_PARTITIONS = {"system", "reserved", "recovery", "extended", "xint13 extended", "ldm metadata", "unknown"}
+
+
+def is_data_partition(ptype: str) -> bool:
+    return (ptype or "").strip().lower() not in NON_DATA_PARTITIONS
+
+
+def drive_letter(value: Any) -> str:
+    """'E', or '' when there is none. Get-Partition gives [char]0 for "no letter", which is not empty."""
+    text = str(value or "").strip("\x00 \t\r\n").upper()
+    return text if len(text) == 1 and "A" <= text <= "Z" else ""
 
 
 @dataclass
@@ -332,7 +346,7 @@ def parse_state(data: dict) -> State:
         parts = [
             DiskPartition(
                 number=_int(p.get("number")) or 0,
-                letter=(p.get("letter") or "").strip(),
+                letter=drive_letter(p.get("letter")),
                 type=p.get("type", ""),
                 size=_int(p.get("size")) or 0,
                 fs=(p.get("fs") or "").strip(),

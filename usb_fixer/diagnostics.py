@@ -8,7 +8,7 @@ from typing import Optional
 from urllib.parse import quote_plus
 
 from . import knowledge, strings
-from .snapshot import Snapshot, SystemInfo, take_snapshot
+from .snapshot import Snapshot, SystemInfo, is_data_partition, take_snapshot
 from .system import Runner, run
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
@@ -231,7 +231,7 @@ def check_storage(snap: Snapshot) -> list:
         if d.offline:
             continue
         for p in d.partitions:
-            if p.size > 0 and p.type.lower() in {"basic", "ifs", ""} and p.fs.upper() in {"RAW", "UNKNOWN"}:
+            if p.size > 0 and is_data_partition(p.type) and p.fs.upper() in {"RAW", "UNKNOWN"}:
                 raw.append((d, p))
     if raw:
         out.append(
@@ -248,7 +248,7 @@ def check_storage(snap: Snapshot) -> list:
             continue
         for p in d.partitions:
             # a RAW partition must not get a letter: Windows would then pop up "format this disk?"
-            if not p.letter and p.size > 0 and p.type.lower() in {"basic", "ifs", ""} and (d, p) not in raw:
+            if not p.letter and p.size > 0 and is_data_partition(p.type) and (d, p) not in raw:
                 missing.append((d, p))
     if missing:
         out.append(

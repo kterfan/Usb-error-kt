@@ -199,6 +199,21 @@ class NewChecksTests(unittest.TestCase):
         self.assertIn("usb_disk_raw", keys(found))
         self.assertNotIn("usb_disk_no_letter", keys(found))
 
+    def test_mbr_fat32_partition_without_letter_is_found(self):
+        found = scan(demo.DemoRunner(state=self.state_with(type="FAT32 XINT13")), TODAY).findings
+        self.assertIn("usb_disk_no_letter", keys(found))
+
+    def test_nul_drive_letter_means_no_letter(self):
+        # Get-Partition gives [char]0 for "no letter"; it must not count as a letter
+        found = scan(demo.DemoRunner(state=self.state_with(letter="\u0000")), TODAY).findings
+        self.assertIn("usb_disk_no_letter", keys(found))
+        self.assertEqual(snapshot.drive_letter("e"), "E")
+        self.assertEqual(snapshot.drive_letter(None), "")
+
+    def test_reserved_partition_needs_no_letter(self):
+        found = scan(demo.DemoRunner(state=self.state_with(type="Reserved")), TODAY).findings
+        self.assertNotIn("usb_disk_no_letter", keys(found))
+
     def test_every_finding_has_a_recommendation(self):
         for f in scan(demo.DemoRunner(), TODAY).findings:
             self.assertTrue(f.recommendation.strip(), f.key)
