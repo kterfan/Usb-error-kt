@@ -24,6 +24,7 @@ jobs:
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8  # the console is cp1252; Persian text in a print must not crash a test
         run: |
           python -m unittest discover -s tests -t . -v 2>&1 | Tee-Object -FilePath test-log.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -32,6 +33,7 @@ jobs:
         shell: pwsh
         env:
           USB_FIXER_REAL_TESTS: "1"
+          PYTHONIOENCODING: utf-8
         run: |
           python -m unittest discover -s tests_windows -t . -v 2>&1 | Tee-Object -FilePath real-test-log.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
