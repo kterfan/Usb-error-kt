@@ -1,5 +1,5 @@
 ﻿; Inno Setup script: builds USB-Fixer-Setup-<version>.exe from dist\USB-Fixer.exe
-; Build:  ISCC /DAppVersion=0.9.0 installer\usb_fixer.iss
+; Build:  ISCC /DAppVersion=1.0.0 installer\usb_fixer.iss
 ; Author: Erfan Esmailzadeh (عرفان اسمعیل زاده) - https://github.com/kterfan
 
 #ifndef AppVersion

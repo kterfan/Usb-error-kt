@@ -270,6 +270,26 @@ def check_events(snap: Snapshot) -> list:
     return [Finding("event_errors", "info", params={"lines": lines})]
 
 
+def check_dropouts(snap: Snapshot) -> list:
+    """A USB drive that dropped or stalled mid-use in the last week, counted per day."""
+    drops = snap.state.drops
+    if not drops:
+        return []
+    per_day = {}
+    for _, day in drops:
+        per_day[day] = per_day.get(day, 0) + 1
+    days = sorted(d for d in per_day if d)
+    lines = _plain_lines(f"{d}: {per_day[d]} بار" for d in days)
+    return [
+        Finding(
+            "storage_dropouts",
+            "warn",
+            params={"count": len(drops), "days": len(days), "lines": lines},
+            manual=["front_panel_header", "try_port_cable"],
+        )
+    ]
+
+
 def check_knowledge(snap: Snapshot, today: date, rules: list, bios=None) -> list:
     out = []
     current = bios is not None and bios.is_current
@@ -351,6 +371,7 @@ def analyze(
         + check_drivers(snap)
         + check_power(snap)
         + check_storage(snap)
+        + check_dropouts(snap)
         + check_events(snap)
         + check_knowledge(snap, today, rules, bios)
         + check_bios(snap, bios)

@@ -81,9 +81,19 @@ $disks = @(Get-Disk | Where-Object { $_.BusType -eq 'USB' } | ForEach-Object {
 })
 $hub = @(Get-CimInstance -Namespace root/wmi -ClassName MSPower_DeviceEnable | Where-Object { $_.InstanceName -like 'USB*' -and $_.Enable } | ForEach-Object { $_.InstanceName })
 $since = (Get-Date).AddDays(-7)
-$ev = @(Get-WinEvent -FilterHashtable @{LogName='System'; Level=2,3; StartTime=$since} | Where-Object { $_.ProviderName -match 'USB|Kernel-PnP' } | Group-Object ProviderName,Id | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object {
+$sys = @(Get-WinEvent -FilterHashtable @{LogName='System'; Level=2,3; StartTime=$since})
+# Kernel-PnP logs every device (cameras, Windows Hello...): keep only its USB / USB-storage lines
+$ev = @($sys | Where-Object { $_.ProviderName -match 'USB' -or ($_.ProviderName -match 'Kernel-PnP' -and "$($_.Message)" -match 'USB|UASP|SCSI\\Disk') } | Group-Object ProviderName,Id | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object {
   $m = ("$($_.Group[0].Message)" -replace '\s+', ' ')
   [pscustomobject]@{ provider="$($_.Group[0].ProviderName)"; id=[int]$_.Group[0].Id; count=[int]$_.Count; sample=$m.Substring(0, [Math]::Min(160, $m.Length)) }
+})
+# a storage device that dropped or stalled mid-use: disk 51 (paging error), 153 (I/O retried), 157 (surprise removed);
+# internal (non-USB) disks that are present now are left out
+$internal = @(Get-Disk | Where-Object { $_.BusType -ne 'USB' } | ForEach-Object { [int]$_.Number })
+$drops = @($sys | Where-Object { $_.ProviderName -eq 'disk' -and @(51,153,157) -contains $_.Id } | ForEach-Object {
+  $msg = "$($_.Message)"; $n = -1
+  if ($msg -match 'Harddisk(\d+)') { $n = [int]$Matches[1] } elseif ($msg -match 'Disk (\d+)') { $n = [int]$Matches[1] }
+  if ($internal -notcontains $n) { [pscustomobject]@{ id=[int]$_.Id; day=$_.TimeCreated.ToString('yyyy-MM-dd') } }
 })
 [pscustomobject]@{
   services=$svc
@@ -92,7 +102,7 @@ $ev = @(Get-WinEvent -FilterHashtable @{LogName='System'; Level=2,3; StartTime=$
   deny_all=(RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices' 'Deny_All')
   write_protect=(RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\StorageDevicePolicies' 'WriteProtect')
   fast_startup=(RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled')
-  hub_power=$hub; disks=$disks; events=$ev
+  hub_power=$hub; disks=$disks; events=$ev; drops=$drops
 } | ConvertTo-Json -Depth 6 -Compress
 """
 
@@ -231,6 +241,7 @@ class State:
     hub_power: list = field(default_factory=list)
     disks: list = field(default_factory=list)
     events: list = field(default_factory=list)
+    drops: list = field(default_factory=list)  # (event id, "yyyy-mm-dd") per storage drop-out
 
 
 @dataclass
@@ -368,6 +379,11 @@ def parse_state(data: dict) -> State:
         EventGroup(e.get("provider", ""), _int(e.get("id")) or 0, _int(e.get("count")) or 0, e.get("sample", ""))
         for e in _as_list(data.get("events"))
     ]
+    drops = [
+        (_int(d.get("id")) or 0, str(d.get("day", "")))
+        for d in _as_list(data.get("drops"))
+        if isinstance(d, dict)
+    ]
     services = data.get("services") or {}
     return State(
         plugplay_status=_int(services.get("PlugPlay")),
@@ -379,6 +395,7 @@ def parse_state(data: dict) -> State:
         hub_power=[h for h in _as_list(data.get("hub_power")) if isinstance(h, str)],
         disks=disks,
         events=events,
+        drops=drops,
     )
 
 
