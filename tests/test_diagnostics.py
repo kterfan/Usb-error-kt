@@ -118,6 +118,29 @@ class AnalyzeTests(unittest.TestCase):
         runner = demo.DemoRunner(inv, state, power="Current AC Power Setting Index: 0x00000000\nCurrent DC Power Setting Index: 0x00000000\n")
         self.assertEqual(scan(runner, TODAY).findings, [])
 
+    def test_storage_dropouts_counted_per_day(self):
+        state = copy.deepcopy(demo.DEMO_STATE)
+        state["drops"] = [{"id": 157, "day": "2026-10-28"}, {"id": 51, "day": "2026-10-28"}, {"id": 153, "day": "2026-10-30"}]
+        findings = scan(demo.DemoRunner(state=state), TODAY).findings
+        f = next(f for f in findings if f.key == "storage_dropouts")
+        self.assertEqual(f.severity, "warn")
+        self.assertIsNone(f.fix_id)  # a loose cable is not something Windows can fix
+        self.assertIn("3", f.detail)
+        self.assertIn("2026-10-28: 2", f.detail)
+        self.assertIn("front_panel_header", f.manual)
+        self.assertIn("جلوی کیس", f.recommendation)
+
+    def test_no_dropouts_no_finding(self):
+        state = copy.deepcopy(demo.DEMO_STATE)
+        state["drops"] = []
+        findings = scan(demo.DemoRunner(state=state), TODAY).findings
+        self.assertNotIn("storage_dropouts", keys(findings))
+
+    def test_state_script_ignores_non_usb_pnp_events(self):
+        from usb_fixer.snapshot import STATE_SCRIPT
+        self.assertIn("drops=$drops", STATE_SCRIPT)
+        self.assertIn("'Kernel-PnP' -and", STATE_SCRIPT)
+
     def test_no_controller(self):
         inv = copy.deepcopy(demo.DEMO_INVENTORY)
         inv["controllers"] = []
@@ -197,6 +220,21 @@ class NewChecksTests(unittest.TestCase):
     def test_raw_without_letter_is_not_also_offered_a_letter(self):
         found = scan(demo.DemoRunner(state=self.state_with(fs="RAW")), TODAY).findings
         self.assertIn("usb_disk_raw", keys(found))
+        self.assertNotIn("usb_disk_no_letter", keys(found))
+
+    def test_mbr_fat32_partition_without_letter_is_found(self):
+        found = scan(demo.DemoRunner(state=self.state_with(type="FAT32 XINT13")), TODAY).findings
+        self.assertIn("usb_disk_no_letter", keys(found))
+
+    def test_nul_drive_letter_means_no_letter(self):
+        # Get-Partition gives [char]0 for "no letter"; it must not count as a letter
+        found = scan(demo.DemoRunner(state=self.state_with(letter="\u0000")), TODAY).findings
+        self.assertIn("usb_disk_no_letter", keys(found))
+        self.assertEqual(snapshot.drive_letter("e"), "E")
+        self.assertEqual(snapshot.drive_letter(None), "")
+
+    def test_reserved_partition_needs_no_letter(self):
+        found = scan(demo.DemoRunner(state=self.state_with(type="Reserved")), TODAY).findings
         self.assertNotIn("usb_disk_no_letter", keys(found))
 
     def test_every_finding_has_a_recommendation(self):

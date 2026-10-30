@@ -3,4 +3,4 @@
 Created by Erfan Esmailzadeh (عرفان اسمعیل زاده) - https://github.com/kterfan
 """
 
-__version__ = "0.9.0"
+__version__ = "1.0.0"

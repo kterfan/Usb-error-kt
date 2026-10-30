@@ -5,6 +5,7 @@ This is what tells "the port/cable/device is the problem" apart from "Windows is
 - Windows saw it but could not talk to it -> usually power/cable/device; sometimes driver
 - Windows set it up but it shows an error -> driver/settings (software side), fixable here
 - storage arrived but no drive / RAW      -> volume problem, fixable or recoverable
+- storage arrived but no disk came of it  -> never "healthy": nothing shows up in This PC
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from typing import Callable, Optional
 
 from . import devices, strings
 from .diagnostics import Finding
+from .snapshot import drive_letter, is_data_partition
 from .system import Runner, powershell_cmd
 
 NODES_SCRIPT = r"""# SCRIPT:live-nodes
@@ -28,12 +30,14 @@ $n = @(Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'USB\*' -
 ConvertTo-Json -InputObject $n -Depth 3 -Compress
 """
 
+# Every disk, not only BusType USB: a UASP drive can report another bus type. Only disks that were not
+# there before the test count, so the internal ones never get in the way.
 DISKS_SCRIPT = r"""# SCRIPT:live-disks
 $ErrorActionPreference='SilentlyContinue'
-$d = @(Get-Disk | Where-Object { $_.BusType -eq 'USB' } | ForEach-Object {
+$d = @(Get-Disk | ForEach-Object {
   $k = $_
-  $p = @(Get-Partition -DiskNumber $k.Number | ForEach-Object { $v = $_ | Get-Volume -ErrorAction SilentlyContinue; [pscustomobject]@{ number=[int]$_.PartitionNumber; letter="$($_.DriveLetter)".Trim(); type="$($_.Type)"; size=[int64]$_.Size; fs="$($v.FileSystemType)" } })
-  [pscustomobject]@{ number=[int]$k.Number; name="$($k.FriendlyName)"; offline=[bool]$k.IsOffline; partitions=$p }
+  $p = @(Get-Partition -DiskNumber $k.Number | ForEach-Object { $v = $_ | Get-Volume -ErrorAction SilentlyContinue; [pscustomobject]@{ number=[int]$_.PartitionNumber; letter=("$($_.DriveLetter)" -replace '[^A-Za-z]', ''); type="$($_.Type)"; size=[int64]$_.Size; fs="$($v.FileSystemType)" } })
+  [pscustomobject]@{ number=[int]$k.Number; name="$($k.FriendlyName)"; bus="$($k.BusType)"; style="$($k.PartitionStyle)"; size=[int64]$k.Size; offline=[bool]$k.IsOffline; partitions=$p }
 })
 ConvertTo-Json -InputObject $d -Depth 4 -Compress
 """
@@ -49,6 +53,9 @@ ConvertTo-Json -InputObject $e -Depth 3 -Compress
 """
 
 ENUM_FAIL = re.compile(r"enumerat|descriptor|reset|failed|could not|power surge|over.?current", re.IGNORECASE)
+STORAGE_CLASSES = {"diskdrive", "scsiadapter", "cdrom"}  # SCSIAdapter: the UASP side of a USB 3 drive
+STORAGE_NAME = re.compile(r"mass storage|attached scsi|\buas\b", re.IGNORECASE)
+CARD_READER = re.compile(r"sd/mmc|micro ?sd|compact ?flash|\bcf\b|\bxd\b|\bms\b|memory ?stick|card|reader", re.IGNORECASE)
 
 
 @dataclass
@@ -78,9 +85,29 @@ def poll_nodes(runner: Runner) -> dict:
     return {n["id"]: n for n in _json_list(res.out) if isinstance(n, dict) and n.get("id")} if res.ok else {}
 
 
+def _partitions(disk: dict) -> list:
+    parts = disk.get("partitions") or []
+    if isinstance(parts, dict):  # PowerShell returns an object, not a list, for one partition
+        parts = [parts]
+    return [p for p in parts if isinstance(p, dict)]
+
+
 def poll_disks(runner: Runner) -> dict:
     res = runner(powershell_cmd(DISKS_SCRIPT))
-    return {d["number"]: d for d in _json_list(res.out) if isinstance(d, dict) and "number" in d} if res.ok else {}
+    if not res.ok:
+        return {}
+    out = {}
+    for d in _json_list(res.out):
+        if isinstance(d, dict) and "number" in d:
+            parts = _partitions(d)
+            for p in parts:
+                p["letter"] = drive_letter(p.get("letter"))
+            out[d["number"]] = dict(d, partitions=parts)
+    return out
+
+
+def _letters(disks: list) -> list:
+    return [x for d in disks for p in _partitions(d) if (x := drive_letter(p.get("letter")))]
 
 
 def recent_events(runner: Runner, seconds: int) -> list:
@@ -113,9 +140,45 @@ def _friendly(nodes: list) -> list:
         unknown = vid == "0000" or any("unknown usb device" in x.lower() for x in names)
         if unknown and not real:
             name = "دستگاه ناشناس USB (خودش رو معرفی نکرد)"
+        storage = any(str(m.get("cls", "")).lower() in STORAGE_CLASSES or str(m.get("id", "")).upper().startswith("USBSTOR\\")
+                      or STORAGE_NAME.search(m.get("name", "") or "") for m in members)
         out.append({"key": key, "name": name, "error_code": code, "ids": [m.get("id") for m in members],
-                    "unknown": unknown})
+                    "unknown": unknown, "storage": storage,
+                    "card_reader": storage and any(CARD_READER.search(x or "") for x in names)})
     return out
+
+
+def _no_drive(storage: list, enum_events: list, names: list) -> LiveResult:
+    """A storage device arrived on USB, but no drive came out of it: nothing to see in This PC."""
+    if storage and all(a["card_reader"] for a in storage):
+        return LiveResult(
+            "storage_issue", "hardware", "کارت‌خوان وصل شد ولی کارتی توش دیده نشد",
+            "خود کارت‌خوان سالم وصل شده، ولی ویندوز هیچ کارت حافظه‌ای توش ندید؛ برای همین تو This PC درایوی اضافه نشد.",
+            [
+                "کارت رو کامل جا بزن و دوباره تست کن (تست رو شروع کن، بعد کارت رو بذار).",
+                "اگه کارت توش بوده: کارت رو روی یه گوشی یا کارت‌خوان دیگه امتحان کن؛ ممکنه خود کارت خراب باشه.",
+            ],
+            added=names, events=enum_events,
+        )
+    return LiveResult(
+        "storage_issue", "hardware", "حافظه به USB وصل شد ولی ویندوز خودِ دیسک رو ندید",
+        "بخش USB دستگاه (برد داخل قاب هارد یا فلش) جواب داد، ولی دیسک داخلش بالا نیومد؛ برای همین تو This PC "
+        "چیزی نمی‌بینی. تو هاردهای اکسترنال معمولاً یعنی برق کافی برای چرخیدن هارد نمی‌رسه، کابل ایراد داره یا خود "
+        "هارد مشکل پیدا کرده؛ گاهی هم درایور حافظه (USBSTOR یا UASP) تو ویندوز خاموشه.",
+        [
+            "دستگاه رو مستقیم به پورت پشت کیس بزن، بدون هاب و کابل رابط، با یه کابل کوتاه و سالم.",
+            "اگه پشت کیس کار می‌کنه و فقط پورت جلو این‌طوریه، مشکل از کابل پورت‌های جلوی کیسه که به مادربرد وصله "
+            "(شل شده یا برق کافی نمی‌رسونه). با کامپیوتر خاموش، سوکت USB جلوی کیس رو از روی مادربرد دربیار و محکم "
+            "جا بزن.",
+            "اگه هارد اکسترناله، گوش کن: اگه نمی‌چرخه یا تیک‌تیک می‌کنه، برق کم داره یا خود هارد خرابه. "
+            "کابل دوشاخه (Y) یا هاب برق‌دار رو امتحان کن.",
+            "یه «اسکن» کامل بگیر: اگه درایور حافظه یا سیاستی جلوی دیسک رو گرفته باشه، همون‌جا نشون داده و رفع می‌شه.",
+            "تو Disk Management (کلیک راست روی Start) ببین دیسک اونجا هست یا نه.",
+            "روی یه کامپیوتر دیگه امتحان کن: اگه اونجا هم دیده نشد، خود هارد یا قابش خرابه. "
+            "اگه اطلاعات مهمی روشه، قبل از هر کاری به یه متخصص بازیابی اطلاعات بسپارش.",
+        ],
+        added=names, events=enum_events,
+    )
 
 
 def interpret(added_nodes: list, events: list, new_disks: list) -> LiveResult:
@@ -146,6 +209,9 @@ def interpret(added_nodes: list, events: list, new_disks: list) -> LiveResult:
             "معمولاً کابل (مثلاً کابل «فقط شارژ» که سیم دیتا نداره)، پورت خراب یا خاموش، یا خود دستگاه.",
             [
                 "یه دستگاه سالم دیگه (مثلاً یه فلش) رو به همین پورت بزن: اگه اونم دیده نشد، پورت مشکل داره.",
+                "اگه پورت جلوی کیسه و همون دستگاه پشت کیس کار می‌کنه (مخصوصاً اگه یه روز کار می‌کنه و یه روز نه)، "
+                "کابل پورت‌های جلو روی مادربرد شل شده: با کامپیوتر خاموش، سوکت USB جلوی کیس رو از روی مادربرد "
+                "دربیار و محکم جا بزن.",
                 "کابل دیگه‌ای امتحان کن؛ بعضی کابل‌ها فقط شارژ می‌کنن و دیتا رد نمی‌کنن.",
                 "اگه هیچ پورتی کار نمی‌کنه، تو BIOS ببین USB یا «XHCI Hand-Off» خاموش نباشه.",
                 "دستگاه رو روی یه کامپیوتر دیگه امتحان کن.",
@@ -182,24 +248,38 @@ def interpret(added_nodes: list, events: list, new_disks: list) -> LiveResult:
             steps += ["از صفحهٔ «درایورها» درایور سازندهٔ دستگاه رو نصب کن، یا Windows Update رو اجرا کن."]
         return LiveResult("error", side, title, explanation, steps, fixes, names, enum_events)
 
+    storage = [a for a in added if a["storage"]]
     for d in new_disks:
-        parts = d.get("partitions") or []
-        if isinstance(parts, dict):
-            parts = [parts]
+        parts = _partitions(d)
         if d.get("offline"):
             f = Finding("usb_disk_offline", "warn", params={"lines": f"• دیسک {d['number']}"}, fix_id="disk_online",
                         targets=[d["number"]])
             return LiveResult("storage_issue", "software", "حافظه وصل شد ولی ویندوز Offline نگهش داشته",
                               "ویندوز دیسک رو می‌بینه ولی فعالش نکرده. با یه کلیک درست می‌شه و به اطلاعات دست نمی‌زنه.",
                               ["«رفع پیشنهادی» رو بزن."], [f], names)
-        raw = [p for p in parts if str(p.get("fs", "")).upper() in ("RAW", "UNKNOWN") and (p.get("size") or 0) > 0]
+        if not (d.get("size") or 0) and not parts:
+            continue  # a card-reader slot with no card in it: not a disk yet
+        data = [p for p in parts if (p.get("size") or 0) > 0 and is_data_partition(p.get("type", ""))]
+        if not data:
+            steps = [strings.MANUAL["recover_data"],
+                     "فقط اگه هارد نوئه یا اطلاعاتی روش نیست: تو Disk Management روی دیسک کلیک راست کن، "
+                     + ("Initialize Disk و بعد " if str(d.get("style", "")).upper() == "RAW" else "")
+                     + "New Simple Volume رو بزن."]
+            if str(d.get("style", "")).upper() == "RAW":
+                return LiveResult("storage_issue", "software", "حافظه وصل شد ولی مقداردهی نشده (Not Initialized)",
+                                  "ویندوز دیسک رو کامل می‌بینه ولی هیچ جدول پارتیشنی روش نیست؛ برای همین تو This PC دیده نمی‌شه. "
+                                  "یا هارد نوئه و هنوز آماده نشده، یا اطلاعات پارتیشن‌بندیش از بین رفته. اگه قبلاً روش "
+                                  "اطلاعات داشتی، Initialize نکن.", steps, [], names, enum_events)
+            return LiveResult("storage_issue", "software", "حافظه وصل شد ولی هیچ پارتیشنی نداره",
+                              "ویندوز دیسک رو می‌بینه ولی فضاش پارتیشن‌بندی نشده (Unallocated)؛ برای همین تو This PC "
+                              "دیده نمی‌شه. اگه قبلاً روش اطلاعات داشتی، پارتیشن جدید نساز.", steps, [], names, enum_events)
+        raw = [p for p in data if str(p.get("fs", "")).upper() in ("RAW", "UNKNOWN")]
         if raw:
-            return LiveResult("storage_issue", "hardware" if len(raw) == len(parts) else "software",
+            return LiveResult("storage_issue", "hardware" if len(raw) == len(data) else "software",
                               "حافظه وصل شد ولی ویندوز نمی‌تونه محتواش رو بخونه (RAW)",
                               "فایل‌سیستم این حافظه خراب یا ناشناخته‌ست. ویندوز ممکنه پیشنهاد فرمت بده؛ این کار اطلاعات رو پاک می‌کنه.",
                               [strings.MANUAL["recover_data"], strings.MANUAL["format_after_recovery"]], [], names)
-        no_letter = [p for p in parts if not p.get("letter") and (p.get("size") or 0) > 0
-                     and str(p.get("type", "")).lower() in ("basic", "ifs", "")]
+        no_letter = [p for p in data if not p.get("letter")]
         if no_letter and not any(p.get("letter") for p in parts):
             f = Finding("usb_disk_no_letter", "warn", params={"lines": f"• دیسک {d['number']}"}, fix_id="assign_letter",
                         targets=[(d["number"], p.get("number")) for p in no_letter])
@@ -207,7 +287,9 @@ def interpret(added_nodes: list, events: list, new_disks: list) -> LiveResult:
                               "برای همین تو This PC دیده نمی‌شه. با دادن حرف درایو درست می‌شه و به اطلاعات دست نمی‌زنه.",
                               ["«رفع پیشنهادی» رو بزن."], [f], names)
 
-    letters = [p.get("letter") for d in new_disks for p in (d.get("partitions") or []) if isinstance(p, dict) and p.get("letter")]
+    letters = _letters(new_disks)
+    if (storage or new_disks) and not letters:
+        return _no_drive(storage, enum_events, names)
     extra = f" تو This PC با حرف {', '.join(l + ':' for l in letters)} دیده می‌شه." if letters else ""
     return LiveResult(
         "ok", "none", "دستگاه سالم وصل شد و ویندوز درست راه‌اندازیش کرد",
@@ -225,6 +307,7 @@ def run_test(
     should_stop: Optional[Callable[[], bool]] = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    disk_wait: float = 12,
 ) -> LiveResult:
     """Wait up to `duration` seconds for something to be plugged in, let it settle, then interpret."""
     start = clock()
@@ -249,8 +332,20 @@ def run_test(
                 break
         if on_progress:
             on_progress(clock() - start, len(added))
-    elapsed = clock() - start
-    events = recent_events(runner, elapsed + 5)
-    disks_after = poll_disks(runner) if added else {}
-    new_disks = [d for n, d in disks_after.items() if n not in disks_before]
+    new_disks = _new_disks(runner, disks_before) if added else []
+    if added and any(a["storage"] for a in _friendly(list(added.values()))):
+        # the disk and its drive letter come a few seconds after the USB part: give them time before judging
+        waited = clock()
+        while not _letters(new_disks) and clock() - waited < disk_wait:
+            if should_stop and should_stop():
+                break
+            sleep(interval)
+            new_disks = _new_disks(runner, disks_before)
+            if on_progress:
+                on_progress(clock() - start, len(added))
+    events = recent_events(runner, clock() - start + 5)
     return interpret(list(added.values()), events, new_disks)
+
+
+def _new_disks(runner: Runner, before: dict) -> list:
+    return [d for n, d in poll_disks(runner).items() if n not in before]

@@ -8,7 +8,7 @@ from typing import Optional
 from urllib.parse import quote_plus
 
 from . import knowledge, strings
-from .snapshot import Snapshot, SystemInfo, take_snapshot
+from .snapshot import Snapshot, SystemInfo, is_data_partition, take_snapshot
 from .system import Runner, run
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
@@ -231,7 +231,7 @@ def check_storage(snap: Snapshot) -> list:
         if d.offline:
             continue
         for p in d.partitions:
-            if p.size > 0 and p.type.lower() in {"basic", "ifs", ""} and p.fs.upper() in {"RAW", "UNKNOWN"}:
+            if p.size > 0 and is_data_partition(p.type) and p.fs.upper() in {"RAW", "UNKNOWN"}:
                 raw.append((d, p))
     if raw:
         out.append(
@@ -248,7 +248,7 @@ def check_storage(snap: Snapshot) -> list:
             continue
         for p in d.partitions:
             # a RAW partition must not get a letter: Windows would then pop up "format this disk?"
-            if not p.letter and p.size > 0 and p.type.lower() in {"basic", "ifs", ""} and (d, p) not in raw:
+            if not p.letter and p.size > 0 and is_data_partition(p.type) and (d, p) not in raw:
                 missing.append((d, p))
     if missing:
         out.append(
@@ -268,6 +268,26 @@ def check_events(snap: Snapshot) -> list:
         return []
     lines = _plain_lines(f"{e.provider} (شناسه {e.id}) × {e.count}: {e.sample}" for e in snap.state.events)
     return [Finding("event_errors", "info", params={"lines": lines})]
+
+
+def check_dropouts(snap: Snapshot) -> list:
+    """A USB drive that dropped or stalled mid-use in the last week, counted per day."""
+    drops = snap.state.drops
+    if not drops:
+        return []
+    per_day = {}
+    for _, day in drops:
+        per_day[day] = per_day.get(day, 0) + 1
+    days = sorted(d for d in per_day if d)
+    lines = _plain_lines(f"{d}: {per_day[d]} بار" for d in days)
+    return [
+        Finding(
+            "storage_dropouts",
+            "warn",
+            params={"count": len(drops), "days": len(days), "lines": lines},
+            manual=["front_panel_header", "try_port_cable"],
+        )
+    ]
 
 
 def check_knowledge(snap: Snapshot, today: date, rules: list, bios=None) -> list:
@@ -351,6 +371,7 @@ def analyze(
         + check_drivers(snap)
         + check_power(snap)
         + check_storage(snap)
+        + check_dropouts(snap)
         + check_events(snap)
         + check_knowledge(snap, today, rules, bios)
         + check_bios(snap, bios)
